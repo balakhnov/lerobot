@@ -4,6 +4,7 @@ training outputs directory. In the latter case, you might want to run examples/3
 """
 
 from pathlib import Path
+import time
 
 import gym_pusht  # noqa: F401
 import gymnasium as gym
@@ -55,6 +56,7 @@ numpy_observation, info = env.reset(seed=42)
 # from initial state to final state.
 rewards = []
 frames = []
+times = []
 
 # Render frame of the initial state
 frames.append(env.render())
@@ -86,10 +88,12 @@ while not done:
         "observation.image": image,
     }
 
+    start = time.time()
     # Predict the next action with respect to the current observation
     with torch.inference_mode():
         action = policy.select_action(observation)
-
+    stop = time.time()
+    times.append(stop - start)
     # Prepare the action for the environment
     numpy_action = action.squeeze(0).to("cpu").numpy()
 
@@ -113,6 +117,10 @@ else:
 
 # Get the speed of environment (i.e. its number of frames per second).
 fps = env.metadata["render_fps"]
+
+times = numpy.array(times)
+
+print(f"mean dt:{times.mean()}")
 
 # Encode all frames into a mp4 video.
 video_path = output_directory / "rollout.mp4"
