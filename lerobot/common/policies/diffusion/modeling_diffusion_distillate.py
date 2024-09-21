@@ -20,6 +20,7 @@ TODO(alexander-soare):
   - Remove reliance on diffusers for DDPMScheduler and LR scheduler.
 """
 
+import copy
 import math
 from collections import deque
 from typing import Callable
@@ -86,7 +87,7 @@ class DiffusionPolicyDistillate(
 class DiffusionModelDistillate(DiffusionModel):
     def __init__(self, config: DiffusionConfig):
         super().__init__(config=config)
-
+    
     def compute_loss(self, batch: dict[str, Tensor], teacher_model: DiffusionModel) -> Tensor:
         """
         This function expects `batch` to have (at least):
@@ -108,30 +109,25 @@ class DiffusionModelDistillate(DiffusionModel):
         horizon = batch["action"].shape[1]
         assert horizon == self.config.horizon
         assert n_obs_steps == self.config.n_obs_steps
-
+        batch_size = batch["observation.state"].shape[0]
         # Encode image features and concatenate them all together along with the state vector.
         global_cond = self._prepare_global_conditioning(batch)  # (B, global_cond_dim)
-
         # Forward diffusion.
         trajectory = batch["action"]
         # Sample noise to add to the trajectory.
         eps = torch.randn(trajectory.shape, device=trajectory.device)
-        # Sample a random noising timestep for each item in the batch.
-        timesteps = torch.randint(
-            low=0,
-            high=self.noise_scheduler.config.num_train_timesteps,
-            size=(trajectory.shape[0],),
-            device=trajectory.device,
-        ).long()
-        # Add noise to the clean trajectories according to the noise magnitude at each timestep.
-        noisy_trajectory = self.noise_scheduler.add_noise(trajectory, eps, timesteps)
-
-        # Run the denoising network (that might denoise the trajectory, or attempt to predict the noise).
-        pred = self.unet(noisy_trajectory, timesteps, global_cond=global_cond)
+        # Encode image features and concatenate them all together along with the state vector.
+        global_cond = self._prepare_global_conditioning(batch)  # (B, global_cond_dim)
+        
+        pred = self.conditional_sample(batch_size=batch_size,
+                                         global_cond=global_cond,
+                                         eps=copy.deepcopy(eps))
 
         # Compute the loss.
         # The target is teacher prediction
-        target = teacher_model.unet(noisy_trajectory, timesteps, global_cond=global_cond)
+        target = teacher_model.conditional_sample(batch_size=batch_size,
+                                         global_cond=global_cond,
+                                         eps=copy.deepcopy(eps))
         
         loss = F.mse_loss(pred, target, reduction="none")
 

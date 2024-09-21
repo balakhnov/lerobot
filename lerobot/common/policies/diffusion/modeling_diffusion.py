@@ -208,18 +208,21 @@ class DiffusionModel(nn.Module):
 
     # ========= inference  ============
     def conditional_sample(
-        self, batch_size: int, global_cond: Tensor | None = None, generator: torch.Generator | None = None
+        self, batch_size: int, global_cond: Tensor | None = None, generator: torch.Generator | None = None, eps: Tensor | None = None
     ) -> Tensor:
         device = get_device_from_parameters(self)
         dtype = get_dtype_from_parameters(self)
 
         # Sample prior.
-        sample = torch.randn(
-            size=(batch_size, self.config.horizon, self.config.output_shapes["action"][0]),
-            dtype=dtype,
-            device=device,
-            generator=generator,
-        )
+        if eps is None:
+            sample = torch.randn(
+                size=(batch_size, self.config.horizon, self.config.output_shapes["action"][0]),
+                dtype=dtype,
+                device=device,
+                generator=generator,
+            )
+        else:
+            sample = eps
 
         self.noise_scheduler.set_timesteps(self.num_inference_steps)
 
@@ -308,7 +311,6 @@ class DiffusionModel(nn.Module):
 
         # Encode image features and concatenate them all together along with the state vector.
         global_cond = self._prepare_global_conditioning(batch)  # (B, global_cond_dim)
-
         # Forward diffusion.
         trajectory = batch["action"]
         # Sample noise to add to the trajectory.
