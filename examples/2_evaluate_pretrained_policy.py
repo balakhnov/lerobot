@@ -17,10 +17,13 @@ from lerobot.common.policies.diffusion.modeling_diffusion import DiffusionPolicy
 
 # Create a directory to store the video of the evaluation
 output_directory = Path("outputs/eval/example_pusht_diffusion")
+# output_directory = Path("outputs/distil/example_pusht_diffusion")
 output_directory.mkdir(parents=True, exist_ok=True)
 
 # Download the diffusion policy for pusht environment
+# pretrained_policy_path = Path("outputs/eval/example_pusht_diffusion")
 pretrained_policy_path = Path(snapshot_download("lerobot/diffusion_pusht"))
+
 # OR uncomment the following to evaluate a policy from the local outputs/train folder.
 # pretrained_policy_path = Path("outputs/train/example_pusht_diffusion")
 
@@ -35,7 +38,7 @@ else:
     device = torch.device("cpu")
     print(f"GPU is not available. Device set to: {device}. Inference will be slower than on GPU.")
     # Decrease the number of reverse-diffusion steps (trades off a bit of quality for 10x speed)
-    policy.diffusion.num_inference_steps = 10
+    policy.diffusion.num_inference_steps = 1
 
 policy.to(device)
 
@@ -125,5 +128,5 @@ print(f"mean dt:{times.mean()}")
 # Encode all frames into a mp4 video.
 video_path = output_directory / "rollout.mp4"
 imageio.mimsave(str(video_path), numpy.stack(frames), fps=fps)
-
+policy.save_pretrained(output_directory)
 print(f"Video of the evaluation is available in '{video_path}'.")

@@ -57,7 +57,7 @@ import gymnasium as gym
 import numpy as np
 import torch
 from huggingface_hub import snapshot_download
-from huggingface_hub.errors import RepositoryNotFoundError
+# from huggingface_hub.errors import RepositoryNotFoundError
 from huggingface_hub.utils._validators import HFValidationError
 from torch import Tensor, nn
 from tqdm import trange
@@ -478,14 +478,17 @@ def main(
 
     logging.info("Making environment.")
     env = make_env(hydra_cfg)
-
+    for cfg in hydra_cfg:
+        print(cfg)
     logging.info("Making policy.")
+    print(hydra_cfg.policy)
+    hydra_cfg.policy.num_inference_steps = 1
     if hydra_cfg_path is None:
         policy = make_policy(hydra_cfg=hydra_cfg, pretrained_policy_name_or_path=str(pretrained_policy_path))
     else:
         # Note: We need the dataset stats to pass to the policy's normalization modules.
         policy = make_policy(hydra_cfg=hydra_cfg, dataset_stats=make_dataset(hydra_cfg).stats)
-
+    print(policy.config.noise_scheduler_type)
     assert isinstance(policy, nn.Module)
     policy.eval()
 

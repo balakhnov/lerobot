@@ -199,6 +199,7 @@ class DiffusionModel(nn.Module):
             clip_sample=config.clip_sample,
             clip_sample_range=config.clip_sample_range,
             prediction_type=config.prediction_type,
+            timestep_spacing="trailing",
         )
 
         if config.num_inference_steps is None:
@@ -225,7 +226,11 @@ class DiffusionModel(nn.Module):
             sample = eps
 
         self.noise_scheduler.set_timesteps(self.num_inference_steps)
+        # if self.num_inference_steps == 1:
+        #     self.noise_scheduler.set_timesteps(timesteps=[50.0])
 
+        # print(f"timespets: {self.noise_scheduler.timesteps}")
+        
         for t in self.noise_scheduler.timesteps:
             # Predict model output.
             model_output = self.unet(
