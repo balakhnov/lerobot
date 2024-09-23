@@ -28,8 +28,9 @@ pretrained_policy_path = Path(snapshot_download("lerobot/diffusion_pusht"))
 # pretrained_policy_path = Path("outputs/train/example_pusht_diffusion")
 
 policy = DiffusionPolicy.from_pretrained(pretrained_policy_path)
+policy.diffusion.change_noise_scheduler_type('DDIM')
 policy.eval()
-
+print(type(policy.diffusion.noise_scheduler))
 # Check if GPU is available
 if torch.cuda.is_available():
     device = torch.device("cuda")

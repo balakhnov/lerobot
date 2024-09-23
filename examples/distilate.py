@@ -59,6 +59,7 @@ pretrained_policy_path = Path(snapshot_download("lerobot/diffusion_pusht"))
 # pretrained_policy_path = Path("outputs/train/example_pusht_diffusion")
 
 teacher_policy = DiffusionPolicy.from_pretrained(pretrained_policy_path)
+teacher_policy.diffusion.change_noise_scheduler_type('DDIM')
 teacher_policy.diffusion.num_inference_steps = 2
 teacher_policy.eval()
 teacher_policy.to(device)
@@ -67,7 +68,8 @@ teacher_policy.to(device)
 # Policies are initialized with a configuration class, in this case `DiffusionConfig`.
 # For this example, no arguments need to be passed because the defaults are set up for PushT.
 # If you're doing something different, you will likely need to change at least some of the defaults.
-student_policy = DiffusionPolicyDistillate.from_pretrained(Path("outputs/distil/example_pusht_diffusion"))
+student_policy = DiffusionPolicyDistillate.from_pretrained(pretrained_policy_path)
+student_policy.diffusion.change_noise_scheduler_type('DDIM')
 student_policy.diffusion.num_inference_steps = 1
 student_policy.train()
 student_policy.to(device)
