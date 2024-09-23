@@ -207,6 +207,18 @@ class DiffusionModel(nn.Module):
         else:
             self.num_inference_steps = config.num_inference_steps
 
+    def change_noise_scheduler_type(self, name:str):
+        self.noise_scheduler = _make_noise_scheduler(
+            name=name,
+            num_train_timesteps=self.config.num_train_timesteps,
+            beta_start=self.config.beta_start,
+            beta_end=self.config.beta_end,
+            beta_schedule=self.config.beta_schedule,
+            clip_sample=self.config.clip_sample,
+            clip_sample_range=self.config.clip_sample_range,
+            prediction_type=self.config.prediction_type,
+            timestep_spacing="trailing",
+        )
     # ========= inference  ============
     def conditional_sample(
         self, batch_size: int, global_cond: Tensor | None = None, generator: torch.Generator | None = None, eps: Tensor | None = None
@@ -226,10 +238,11 @@ class DiffusionModel(nn.Module):
             sample = eps
 
         self.noise_scheduler.set_timesteps(self.num_inference_steps)
+
         # if self.num_inference_steps == 1:
         #     self.noise_scheduler.set_timesteps(timesteps=[50.0])
 
-        # print(f"timespets: {self.noise_scheduler.timesteps}")
+        # print(f"timesteps: {self.noise_scheduler.timesteps}")
         
         for t in self.noise_scheduler.timesteps:
             # Predict model output.

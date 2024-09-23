@@ -28,8 +28,9 @@ pretrained_policy_path = Path(snapshot_download("lerobot/diffusion_pusht"))
 # pretrained_policy_path = Path("outputs/train/example_pusht_diffusion")
 
 policy = DiffusionPolicy.from_pretrained(pretrained_policy_path)
+policy.diffusion.change_noise_scheduler_type('DDIM')
 policy.eval()
-
+print(type(policy.diffusion.noise_scheduler))
 # Check if GPU is available
 if torch.cuda.is_available():
     device = torch.device("cuda")
@@ -38,7 +39,7 @@ else:
     device = torch.device("cpu")
     print(f"GPU is not available. Device set to: {device}. Inference will be slower than on GPU.")
     # Decrease the number of reverse-diffusion steps (trades off a bit of quality for 10x speed)
-    policy.diffusion.num_inference_steps = 1
+    policy.diffusion.num_inference_steps = 2
 
 policy.to(device)
 
