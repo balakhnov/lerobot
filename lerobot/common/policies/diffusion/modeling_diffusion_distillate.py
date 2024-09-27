@@ -92,7 +92,6 @@ class DiffusionModelDistillate(DiffusionModel):
             size=shape,
             device=device,
         ).long()
-        print(self.noise_scheduler.timesteps)
         return self.noise_scheduler.timesteps[indexes]
 
     def compute_loss(self, batch: dict[str, Tensor], teacher_model: DiffusionModel) -> Tensor:

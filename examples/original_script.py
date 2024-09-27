@@ -20,7 +20,7 @@ from lerobot.common.policies.diffusion.modeling_diffusion_distillate import Diff
 # TODO: evaluate performance of teacher model as function of numbers of steps
 # visualisation
 
-device = torch.device("cpu")
+device = torch.device("cuda")
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--num_steps", type=int, required=True)
@@ -29,7 +29,7 @@ args = parser.parse_args()
 
 NUM_STUDENT_INFERENCE_STEPS = args.num_steps
 
-training_steps = 5000
+training_steps = 1000
 log_freq = 100
 
 # Create a directory to store the video of the evaluation
@@ -52,8 +52,8 @@ dataset = LeRobotDataset("lerobot/pusht", delta_timestamps=delta_timestamps)
 # Create dataloader for offline training.
 dataloader = torch.utils.data.DataLoader(
     dataset,
-    num_workers=0,
-    batch_size=8,
+    num_workers=4,
+    batch_size=64,
     shuffle=True,
     pin_memory=device != torch.device("cpu"),
     drop_last=True,
