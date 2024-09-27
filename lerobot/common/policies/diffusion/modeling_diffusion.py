@@ -29,8 +29,9 @@ import numpy as np
 import torch
 import torch.nn.functional as F  # noqa: N812
 import torchvision
-from diffusers.schedulers.scheduling_ddim import DDIMScheduler
+from lerobot.common.policies.diffusion.ddim_scheduler import DDIMSchedulerDistillation
 from diffusers.schedulers.scheduling_ddpm import DDPMScheduler
+from diffusers.schedulers.scheduling_ddim import DDIMScheduler
 from huggingface_hub import PyTorchModelHubMixin
 from torch import Tensor, nn
 
@@ -157,7 +158,7 @@ class DiffusionPolicy(
         return {"loss": loss}
 
 
-def _make_noise_scheduler(name: str, **kwargs: dict) -> DDPMScheduler | DDIMScheduler:
+def _make_noise_scheduler(name: str, **kwargs: dict) -> DDPMScheduler | DDIMSchedulerDistillation:
     """
     Factory for noise scheduler instances of the requested type. All kwargs are passed
     to the scheduler.
@@ -165,7 +166,7 @@ def _make_noise_scheduler(name: str, **kwargs: dict) -> DDPMScheduler | DDIMSche
     if name == "DDPM":
         return DDPMScheduler(**kwargs)
     elif name == "DDIM":
-        return DDIMScheduler(**kwargs)
+        return DDIMSchedulerDistillation(**kwargs)
     else:
         raise ValueError(f"Unsupported noise scheduler type {name}")
 

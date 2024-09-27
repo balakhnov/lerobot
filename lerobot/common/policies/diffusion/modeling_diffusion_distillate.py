@@ -29,14 +29,9 @@ import einops
 import numpy as np
 import torch
 import torch.nn.functional as F  # noqa: N812
-import torchvision
-from diffusers.schedulers.scheduling_ddim import DDIMScheduler
-from diffusers.schedulers.scheduling_ddpm import DDPMScheduler
-from huggingface_hub import PyTorchModelHubMixin
 from torch import Tensor, nn
 
 from lerobot.common.policies.diffusion.configuration_diffusion import DiffusionConfig
-from lerobot.common.policies.normalize import Normalize, Unnormalize
 from lerobot.common.policies.utils import (
     get_device_from_parameters,
     get_dtype_from_parameters,
@@ -88,6 +83,18 @@ class DiffusionModelDistillate(DiffusionModel):
     def __init__(self, config: DiffusionConfig):
         super().__init__(config=config)
     
+    def distilation_timesteps(self, shape: tuple):
+        self.noise_scheduler.set_timesteps(self.num_inference_steps)
+        device = get_device_from_parameters(self)
+        indexes = torch.randint(
+            low=0,
+            high=self.num_inference_steps,
+            size=shape,
+            device=device,
+        ).long()
+        print(self.noise_scheduler.timesteps)
+        return self.noise_scheduler.timesteps[indexes]
+
     def compute_loss(self, batch: dict[str, Tensor], teacher_model: DiffusionModel) -> Tensor:
         """
         This function expects `batch` to have (at least):
@@ -109,27 +116,56 @@ class DiffusionModelDistillate(DiffusionModel):
         horizon = batch["action"].shape[1]
         assert horizon == self.config.horizon
         assert n_obs_steps == self.config.n_obs_steps
+
         batch_size = batch["observation.state"].shape[0]
         # Encode image features and concatenate them all together along with the state vector.
         global_cond = self._prepare_global_conditioning(batch)  # (B, global_cond_dim)
         # Forward diffusion.
         trajectory = batch["action"]
         # Sample noise to add to the trajectory.
-        eps = torch.randn(trajectory.shape, device=trajectory.device)
+        eps = torch.randn(trajectory.shape, device=trajectory.device)        
         # Encode image features and concatenate them all together along with the state vector.
         global_cond = self._prepare_global_conditioning(batch)  # (B, global_cond_dim)
         
-        pred = self.conditional_sample(batch_size=batch_size,
-                                         global_cond=global_cond,
-                                         eps=copy.deepcopy(eps))
-
-        # Compute the loss.
-        # The target is teacher prediction
-        target = teacher_model.conditional_sample(batch_size=batch_size,
-                                         global_cond=global_cond,
-                                         eps=copy.deepcopy(eps))
+        self.noise_scheduler.set_timesteps(self.num_inference_steps)
+        teacher_model.noise_scheduler.set_timesteps(teacher_model.num_inference_steps)
         
-        loss = F.mse_loss(pred, target, reduction="none")
+        timesteps = self.distilation_timesteps(shape=(trajectory.shape[0],))
+
+        noisy_trajectory = self.noise_scheduler.add_noise(trajectory, eps, timesteps)
+        
+        # one student DDIM step
+        student_trajectory = noisy_trajectory.clone()
+
+        model_output = self.unet(
+                student_trajectory,
+                timesteps,
+                global_cond=global_cond,
+            )
+        
+        # Compute previous image: x_t -> x_t-1
+        student_trajectory = self.noise_scheduler.step(model_output, timesteps, student_trajectory).prev_sample
+        
+        # two teacher DDIM step
+        teacher_trajectory = noisy_trajectory.clone()
+        model_output = teacher_model.unet(
+                teacher_trajectory,
+                timesteps,
+                global_cond=global_cond,
+            )
+        # Compute previous image: x_t -> x_t-1
+        teacher_trajectory = teacher_model.noise_scheduler.step(model_output, timesteps, teacher_trajectory).prev_sample
+        
+        timesteps -=1
+        model_output = teacher_model.unet(
+                teacher_trajectory,
+                timesteps,
+                global_cond=global_cond,
+            )
+        # Compute previous image: x_t -> x_t-1
+        teacher_trajectory = teacher_model.noise_scheduler.step(model_output, timesteps, teacher_trajectory).prev_sample
+        
+        loss = F.mse_loss(teacher_trajectory, student_trajectory, reduction="none")
 
         # Mask loss wherever the action is padded with copies (edges of the dataset trajectory).
         if self.config.do_mask_loss_for_padding:

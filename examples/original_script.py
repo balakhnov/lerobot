@@ -1,12 +1,13 @@
 """
 This scripts distilate diffusion policy with progressive distilation algorithm
 """
-
+import argparse
 from pathlib import Path
 import torch
 import tqdm
 from huggingface_hub import snapshot_download
 import copy
+import math
 
 import wandb
 from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
@@ -14,20 +15,25 @@ from lerobot.common.policies.diffusion.configuration_diffusion import DiffusionC
 from lerobot.common.policies.diffusion.modeling_diffusion import DiffusionPolicy
 from lerobot.common.policies.diffusion.modeling_diffusion_distillate import DiffusionPolicyDistillate
 
-# TODO: switch to DDIM
-# TODO: implement particular case for 2 steps
-# TODO: find out how to work with number of steps(in reference, in our case)
-# TODO: understand algorithm in progressive distilation what exactly do we train
+# add one step update
+# TODO: add evaluation during training
 # TODO: evaluate performance of teacher model as function of numbers of steps
 # visualisation
 
 device = torch.device("cpu")
 
+parser = argparse.ArgumentParser()
+parser.add_argument("--num_steps", type=int, required=True)
+parser.add_argument("--input_policy_path", type=str, required=True)
+args = parser.parse_args()
+
+NUM_STUDENT_INFERENCE_STEPS = args.num_steps
+
 training_steps = 5000
 log_freq = 100
 
 # Create a directory to store the video of the evaluation
-output_directory = Path("outputs/distil/example_pusht_diffusion")
+output_directory = Path(f"outputs/distil/example_pusht_diffusion_{NUM_STUDENT_INFERENCE_STEPS}")
 output_directory.mkdir(parents=True, exist_ok=True)
 
 # Set up the dataset.
@@ -54,26 +60,26 @@ dataloader = torch.utils.data.DataLoader(
 )
 
 # Download the diffusion policy for pusht environment
-pretrained_policy_path = Path(snapshot_download("lerobot/diffusion_pusht"))
-# OR uncomment the following to evaluate a policy from the local outputs/train folder.
+pretrained_policy_path = Path(args.input_policy_path)
+if pretrained_policy_path.as_posix() == "lerobot/diffusion_pusht":
+    pretrained_policy_path = Path(snapshot_download("lerobot/diffusion_pusht"))# OR uncomment the following to evaluate a policy from the local outputs/train folder.
 # pretrained_policy_path = Path("outputs/train/example_pusht_diffusion")
-
-teacher_policy = DiffusionPolicy.from_pretrained(pretrained_policy_path)
-teacher_policy.diffusion.change_noise_scheduler_type('DDIM')
-teacher_policy.diffusion.num_inference_steps = 2
-teacher_policy.eval()
-teacher_policy.to(device)
-
 # Set up the the policy.
 # Policies are initialized with a configuration class, in this case `DiffusionConfig`.
 # For this example, no arguments need to be passed because the defaults are set up for PushT.
 # If you're doing something different, you will likely need to change at least some of the defaults.
 student_policy = DiffusionPolicyDistillate.from_pretrained(pretrained_policy_path)
 student_policy.diffusion.change_noise_scheduler_type('DDIM')
-student_policy.diffusion.num_inference_steps = 1
+student_policy.diffusion.num_inference_steps = NUM_STUDENT_INFERENCE_STEPS
 student_policy.train()
 student_policy.to(device)
 optimizer = torch.optim.Adam(student_policy.parameters(), lr=1e-4)
+
+teacher_policy = DiffusionPolicy.from_pretrained(pretrained_policy_path)
+teacher_policy.diffusion.change_noise_scheduler_type('DDIM')
+teacher_policy.diffusion.num_inference_steps = 2*student_policy.diffusion.num_inference_steps
+teacher_policy.eval()
+teacher_policy.to(device)
 
 # log metrics to wandb
 wandb.init(
@@ -105,6 +111,7 @@ while not done:
             student_policy.save_pretrained(output_directory)
         info = {}
         info['loss'] = loss.item()
+        info['log_loss'] = math.log(loss.item())
         info['step'] = step
         step += 1
         pbar.update()
