@@ -57,7 +57,7 @@ import gymnasium as gym
 import numpy as np
 import torch
 from huggingface_hub import snapshot_download
-# from huggingface_hub.errors import RepositoryNotFoundError
+from huggingface_hub.errors import RepositoryNotFoundError
 from huggingface_hub.utils._validators import HFValidationError
 from torch import Tensor, nn
 from tqdm import trange
@@ -450,7 +450,7 @@ def main(
 ):
     assert (pretrained_policy_path is None) ^ (hydra_cfg_path is None)
     if pretrained_policy_path is not None:
-        hydra_cfg = init_hydra_config(str(pretrained_policy_path / "config.yaml"), config_overrides)
+        hydra_cfg = init_hydra_config(str(pretrained_policy_path / "config.json"), config_overrides)
     else:
         hydra_cfg = init_hydra_config(hydra_cfg_path, config_overrides)
 
@@ -477,11 +477,10 @@ def main(
     log_output_dir(out_dir)
 
     logging.info("Making environment.")
+    print(f'hydra: {hydra_cfg.env}')
+    print(f'hydra: {hydra_cfg.eval}')
     env = make_env(hydra_cfg)
-    for cfg in hydra_cfg:
-        print(cfg)
     logging.info("Making policy.")
-    print(hydra_cfg.policy)
     hydra_cfg.policy.num_inference_steps = 1
     if hydra_cfg_path is None:
         policy = make_policy(hydra_cfg=hydra_cfg, pretrained_policy_name_or_path=str(pretrained_policy_path))

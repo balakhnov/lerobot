@@ -75,10 +75,12 @@ class DDIMSchedulerDistillation(DDIMScheduler):
             # 2. compute alphas, betas
             alpha_prod_t = self.alphas_cumprod[timestep]
             # alpha_prod_t_prev = self.alphas_cumprod[prev_timestep] if prev_timestep >= 0 else self.final_alpha_cumprod
+            final_alpha_cumprod = self.final_alpha_cumprod.expand_as(prev_timestep).to(device=self.alphas_cumprod.device)
+            # print(final_alpha_cumprod.device)
             alpha_prod_t_prev = torch.where(
                 prev_timestep >= 0,
                 self.alphas_cumprod[prev_timestep],
-                self.final_alpha_cumprod.expand_as(prev_timestep)
+                final_alpha_cumprod
             )
 
             if timestep.shape:
@@ -148,10 +150,12 @@ class DDIMSchedulerDistillation(DDIMScheduler):
     
     def _get_variance(self, timestep, prev_timestep):
         alpha_prod_t = self.alphas_cumprod[timestep]
+        final_alpha_cumprod = self.final_alpha_cumprod.expand_as(prev_timestep).to(device=self.alphas_cumprod.device)
+        
         alpha_prod_t_prev = torch.where(
                 prev_timestep >= 0,
                 self.alphas_cumprod[prev_timestep],
-                self.final_alpha_cumprod.expand_as(prev_timestep)
+                final_alpha_cumprod
             )
 
         if timestep.shape:

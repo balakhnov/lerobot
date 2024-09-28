@@ -129,10 +129,10 @@ class DiffusionModelDistillate(DiffusionModel):
         
         timesteps = self.distilation_timesteps(shape=(trajectory.shape[0],)).to(device=trajectory.device)
 
-        noisy_trajectory = self.noise_scheduler.add_noise(trajectory, eps, timesteps)
+        # noisy_trajectory = self.noise_scheduler.add_noise(trajectory, eps, timesteps)
         
         # one student DDIM step
-        student_trajectory = noisy_trajectory.clone()
+        student_trajectory = self.noise_scheduler.add_noise(trajectory, eps, timesteps)
 
         model_output = self.unet(
                 student_trajectory,
@@ -144,7 +144,7 @@ class DiffusionModelDistillate(DiffusionModel):
         student_trajectory = self.noise_scheduler.step(model_output, timesteps, student_trajectory).prev_sample
         
         # two teacher DDIM step
-        teacher_trajectory = noisy_trajectory.clone()
+        teacher_trajectory = teacher_model.noise_scheduler.add_noise(trajectory, eps, timesteps)
         model_output = teacher_model.unet(
                 teacher_trajectory,
                 timesteps,
@@ -152,7 +152,7 @@ class DiffusionModelDistillate(DiffusionModel):
             )
         # Compute previous image: x_t -> x_t-1
         teacher_trajectory = teacher_model.noise_scheduler.step(model_output, timesteps, teacher_trajectory).prev_sample
-        
+
         timesteps = timesteps - teacher_model.noise_scheduler.config.num_train_timesteps // teacher_model.noise_scheduler.num_inference_steps
 
         model_output = teacher_model.unet(

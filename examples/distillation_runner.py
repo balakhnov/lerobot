@@ -12,7 +12,7 @@ def run_distillation(num_steps, input_policy_path):
     subprocess.run(command, check=True)
 
 def main():
-    steps = [32, 16, 8, 4, 2, 1]
+    steps = [8, 4, 2, 1]
     output_base_dir = Path("outputs/distil")
 
     for i, num_steps in enumerate(steps):

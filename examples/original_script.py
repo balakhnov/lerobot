@@ -8,14 +8,16 @@ import tqdm
 from huggingface_hub import snapshot_download
 import copy
 import math
+from lerobot.common.envs.factory import make_env
+from omegaconf import DictConfig
+
 
 import wandb
 from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.common.policies.diffusion.configuration_diffusion import DiffusionConfig
 from lerobot.common.policies.diffusion.modeling_diffusion import DiffusionPolicy
 from lerobot.common.policies.diffusion.modeling_diffusion_distillate import DiffusionPolicyDistillate
-
-# add one step update
+from lerobot.scripts.eval import eval_policy
 # TODO: add evaluation during training
 # TODO: evaluate performance of teacher model as function of numbers of steps
 # visualisation
@@ -31,6 +33,7 @@ NUM_STUDENT_INFERENCE_STEPS = args.num_steps
 
 training_steps = 1000
 log_freq = 100
+num_eval_episods = 10
 
 # Create a directory to store the video of the evaluation
 output_directory = Path(f"outputs/distil/example_pusht_diffusion_{NUM_STUDENT_INFERENCE_STEPS}")
@@ -68,6 +71,8 @@ if pretrained_policy_path.as_posix() == "lerobot/diffusion_pusht":
 # Policies are initialized with a configuration class, in this case `DiffusionConfig`.
 # For this example, no arguments need to be passed because the defaults are set up for PushT.
 # If you're doing something different, you will likely need to change at least some of the defaults.
+
+print(f'policy path: {pretrained_policy_path}')
 student_policy = DiffusionPolicyDistillate.from_pretrained(pretrained_policy_path)
 student_policy.diffusion.change_noise_scheduler_type('DDIM')
 student_policy.diffusion.num_inference_steps = NUM_STUDENT_INFERENCE_STEPS
@@ -80,6 +85,20 @@ teacher_policy.diffusion.change_noise_scheduler_type('DDIM')
 teacher_policy.diffusion.num_inference_steps = 2*student_policy.diffusion.num_inference_steps
 teacher_policy.eval()
 teacher_policy.to(device)
+
+env_cfg = DictConfig({'env':{'name': 'pusht', 
+           'task': 'PushT-v0', 
+           'image_size': 96, 
+           'state_dim': 2, 
+           'action_dim': 2, 
+           'fps': '${fps}', 
+           'episode_length': 300, 
+           'gym': {'obs_type': 'pixels_agent_pos', 
+                   'render_mode': 'rgb_array', 
+                   'visualization_width': 384, 
+                   'visualization_height': 384}},
+                   'eval':{'n_episodes': 10, 'batch_size': 10, 'use_async_envs': False}})
+env = make_env(cfg=env_cfg)
 
 # log metrics to wandb
 wandb.init(
@@ -106,10 +125,32 @@ while not done:
         loss.backward()
         optimizer.step()
         optimizer.zero_grad()
+
+        info = {}
         if step % log_freq == 0:
             # Save a policy checkpoint.
             student_policy.save_pretrained(output_directory)
-        info = {}
+            # eval student
+            student_eval_info = eval_policy(
+                env,
+                student_policy,
+                num_eval_episods,
+                max_episodes_rendered=2,
+                videos_dir=Path(output_directory) / "student_videos",
+                start_seed=42,
+            )
+            # eval teacher
+            teacher_eval_info = eval_policy(
+                env,
+                teacher_policy,
+                num_eval_episods,
+                max_episodes_rendered=2,
+                videos_dir=Path(output_directory) / "student_videos",
+                start_seed=42,
+            )
+            student_policy.train()
+            info['teacher_success_rate'] = teacher_eval_info["aggregated"]["pc_success"]
+            info['student_success_rate'] = student_eval_info["aggregated"]["pc_success"]
         info['loss'] = loss.item()
         info['log_loss'] = math.log(loss.item())
         info['step'] = step
