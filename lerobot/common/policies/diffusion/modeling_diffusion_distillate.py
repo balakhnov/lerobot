@@ -85,12 +85,10 @@ class DiffusionModelDistillate(DiffusionModel):
     
     def distilation_timesteps(self, shape: tuple):
         self.noise_scheduler.set_timesteps(self.num_inference_steps)
-        device = get_device_from_parameters(self)
         indexes = torch.randint(
             low=0,
             high=self.num_inference_steps,
-            size=shape,
-            device=device,
+            size=shape
         ).long()
         return self.noise_scheduler.timesteps[indexes]
 
@@ -129,7 +127,7 @@ class DiffusionModelDistillate(DiffusionModel):
         self.noise_scheduler.set_timesteps(self.num_inference_steps)
         teacher_model.noise_scheduler.set_timesteps(teacher_model.num_inference_steps)
         
-        timesteps = self.distilation_timesteps(shape=(trajectory.shape[0],))
+        timesteps = self.distilation_timesteps(shape=(trajectory.shape[0],)).to(device=trajectory.device)
 
         noisy_trajectory = self.noise_scheduler.add_noise(trajectory, eps, timesteps)
         
@@ -155,7 +153,8 @@ class DiffusionModelDistillate(DiffusionModel):
         # Compute previous image: x_t -> x_t-1
         teacher_trajectory = teacher_model.noise_scheduler.step(model_output, timesteps, teacher_trajectory).prev_sample
         
-        timesteps -=1
+        timesteps = timesteps - teacher_model.noise_scheduler.config.num_train_timesteps // teacher_model.noise_scheduler.num_inference_steps
+
         model_output = teacher_model.unet(
                 teacher_trajectory,
                 timesteps,

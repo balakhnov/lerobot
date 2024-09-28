@@ -52,7 +52,7 @@ dataset = LeRobotDataset("lerobot/pusht", delta_timestamps=delta_timestamps)
 # Create dataloader for offline training.
 dataloader = torch.utils.data.DataLoader(
     dataset,
-    num_workers=4,
+    num_workers=2,
     batch_size=64,
     shuffle=True,
     pin_memory=device != torch.device("cpu"),
