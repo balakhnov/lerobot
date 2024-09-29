@@ -140,8 +140,10 @@ class DiffusionModelDistillate(DiffusionModel):
                 global_cond=global_cond,
             )
         
-        # Compute previous image: x_t -> x_t-1
-        student_trajectory = self.noise_scheduler.step(model_output, timesteps, student_trajectory).prev_sample
+        snr = self.noise_scheduler.snr(timestep=timesteps)
+        w = 1 + snr ** 2
+        # # Compute previous image: x_t -> x_t-1
+        # student_trajectory = self.noise_scheduler.step(model_output, timesteps, student_trajectory).prev_sample
         
         # two teacher DDIM step
         teacher_trajectory = teacher_model.noise_scheduler.add_noise(trajectory, eps, timesteps)
@@ -153,17 +155,21 @@ class DiffusionModelDistillate(DiffusionModel):
         # Compute previous image: x_t -> x_t-1
         teacher_trajectory = teacher_model.noise_scheduler.step(model_output, timesteps, teacher_trajectory).prev_sample
 
-        timesteps = timesteps - teacher_model.noise_scheduler.config.num_train_timesteps // teacher_model.noise_scheduler.num_inference_steps
+        prev_timesteps = timesteps - teacher_model.noise_scheduler.config.num_train_timesteps // teacher_model.noise_scheduler.num_inference_steps
 
         model_output = teacher_model.unet(
                 teacher_trajectory,
-                timesteps,
+                prev_timesteps,
                 global_cond=global_cond,
             )
         # Compute previous image: x_t -> x_t-1
-        teacher_trajectory = teacher_model.noise_scheduler.step(model_output, timesteps, teacher_trajectory).prev_sample
+        teacher_trajectory = teacher_model.noise_scheduler.step(model_output, prev_timesteps, teacher_trajectory).prev_sample
         
-        loss = F.mse_loss(teacher_trajectory, student_trajectory, reduction="none")
+        eps_predict_student = self.noise_scheduler.step_back(prev_sample=teacher_trajectory,
+                                                             sample=trajectory,
+                                                             timestep=timesteps)
+
+        loss = F.mse_loss(eps_predict_student, model_output, reduction="none")
 
         # Mask loss wherever the action is padded with copies (edges of the dataset trajectory).
         if self.config.do_mask_loss_for_padding:

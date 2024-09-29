@@ -18,7 +18,10 @@ from lerobot.common.policies.diffusion.configuration_diffusion import DiffusionC
 from lerobot.common.policies.diffusion.modeling_diffusion import DiffusionPolicy
 from lerobot.common.policies.diffusion.modeling_diffusion_distillate import DiffusionPolicyDistillate
 from lerobot.scripts.eval import eval_policy
-# TODO: add evaluation during training
+
+# TODO: implement original algorithm, not some approximation
+# TODO: test back_step function
+# TODO: test shape and functionality of weighting function
 # TODO: evaluate performance of teacher model as function of numbers of steps
 # visualisation
 
@@ -145,7 +148,7 @@ while not done:
                 teacher_policy,
                 num_eval_episods,
                 max_episodes_rendered=2,
-                videos_dir=Path(output_directory) / "student_videos",
+                videos_dir=Path(output_directory) / "teacher_videos",
                 start_seed=42,
             )
             student_policy.train()

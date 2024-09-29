@@ -168,3 +168,40 @@ class DDIMSchedulerDistillation(DDIMScheduler):
         variance = (beta_prod_t_prev / beta_prod_t) * (1 - alpha_prod_t / alpha_prod_t_prev)
 
         return variance
+    
+    def step_back(self, prev_sample, sample, timestep):
+        
+        # 1. get previous step value (=t-1)
+        prev_timestep = timestep - self.config.num_train_timesteps // self.num_inference_steps
+
+        # 2. compute alphas, betas
+        alpha_prod_t = self.alphas_cumprod[timestep]
+        # alpha_prod_t_prev = self.alphas_cumprod[prev_timestep] if prev_timestep >= 0 else self.final_alpha_cumprod
+        final_alpha_cumprod = self.final_alpha_cumprod.expand_as(prev_timestep).to(device=self.alphas_cumprod.device)
+        # print(final_alpha_cumprod.device)
+        alpha_prod_t_prev = torch.where(
+            prev_timestep >= 0,
+            self.alphas_cumprod[prev_timestep],
+            final_alpha_cumprod
+        )
+
+        if timestep.shape:
+            alpha_prod_t = alpha_prod_t[:,None,None]
+            alpha_prod_t_prev = alpha_prod_t_prev[:,None,None]
+        beta_prod_t = 1 - alpha_prod_t
+
+        # 7. compute x_t without "random noise" of formula (12) from https://arxiv.org/pdf/2010.02502.pdf
+        pred_epsilon = ((prev_sample - alpha_prod_t_prev ** (0.5) / alpha_prod_t ** (0.5) * sample) / 
+                        ((1 - alpha_prod_t_prev) ** (0.5)  - alpha_prod_t_prev ** (0.5) / alpha_prod_t ** (0.5) * beta_prod_t ** (0.5)))
+
+        return pred_epsilon
+    
+    def snr(self, timestep):
+        # 2. compute alphas, betas
+        alpha_prod_t = self.alphas_cumprod[timestep]
+        if timestep.shape:
+            alpha_prod_t = alpha_prod_t[:,None,None]
+
+        beta_prod_t = 1 - alpha_prod_t
+
+        return alpha_prod_t/beta_prod_t
