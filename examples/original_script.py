@@ -130,7 +130,7 @@ while not done:
         optimizer.zero_grad()
 
         info = {}
-        if step % log_freq == 0:
+        if step > 0 and step % log_freq == 0:
             # Save a policy checkpoint.
             student_policy.save_pretrained(output_directory)
             # eval student

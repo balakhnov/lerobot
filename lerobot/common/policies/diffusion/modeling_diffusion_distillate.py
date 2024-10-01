@@ -143,33 +143,37 @@ class DiffusionModelDistillate(DiffusionModel):
         snr = self.noise_scheduler.snr(timestep=timesteps)
         w = 1 + snr ** 2
         # # Compute previous image: x_t -> x_t-1
-        # student_trajectory = self.noise_scheduler.step(model_output, timesteps, student_trajectory).prev_sample
+        student_trajectory_prev = self.noise_scheduler.step(model_output, timesteps, student_trajectory).prev_sample
         
         # two teacher DDIM step
         teacher_trajectory = teacher_model.noise_scheduler.add_noise(trajectory, eps, timesteps)
-        model_output = teacher_model.unet(
+        model_output_1 = teacher_model.unet(
                 teacher_trajectory,
                 timesteps,
                 global_cond=global_cond,
             )
         # Compute previous image: x_t -> x_t-1
-        teacher_trajectory = teacher_model.noise_scheduler.step(model_output, timesteps, teacher_trajectory).prev_sample
+        teacher_trajectory_prev = teacher_model.noise_scheduler.step(model_output_1, timesteps, teacher_trajectory).prev_sample
 
         prev_timesteps = timesteps - teacher_model.noise_scheduler.config.num_train_timesteps // teacher_model.noise_scheduler.num_inference_steps
 
-        model_output = teacher_model.unet(
-                teacher_trajectory,
+        model_output_2 = teacher_model.unet(
+                teacher_trajectory_prev,
                 prev_timesteps,
                 global_cond=global_cond,
             )
         # Compute previous image: x_t -> x_t-1
-        teacher_trajectory = teacher_model.noise_scheduler.step(model_output, prev_timesteps, teacher_trajectory).prev_sample
+        teacher_ouptut = teacher_model.noise_scheduler.step(model_output_2, prev_timesteps, teacher_trajectory_prev)
         
-        eps_predict_student = self.noise_scheduler.step_back(prev_sample=teacher_trajectory,
-                                                             sample=trajectory,
+        teacher_trajectory_prev_prev = teacher_ouptut.prev_sample
+        eps_predict_student = self.noise_scheduler.step_back(prev_sample=teacher_trajectory_prev_prev,
+                                                             sample=teacher_trajectory,
                                                              timestep=timesteps)
-
+        print(model_output[0,:,:].T)
+        print(eps_predict_student[0,:,:].T)
+        # print(model_output_1[0,:,:].T)
         loss = F.mse_loss(eps_predict_student, model_output, reduction="none")
+        # print(f'loss: {loss.shape}')
 
         # Mask loss wherever the action is padded with copies (edges of the dataset trajectory).
         if self.config.do_mask_loss_for_padding:
