@@ -156,7 +156,10 @@ class DiffusionModelDistillate(DiffusionModel):
         teacher_trajectory_prev = teacher_model.noise_scheduler.step(model_output_1, timesteps, teacher_trajectory).prev_sample
 
         prev_timesteps = timesteps - teacher_model.noise_scheduler.config.num_train_timesteps // teacher_model.noise_scheduler.num_inference_steps
-
+        prev_timesteps = torch.clip(prev_timesteps,
+                                    min = 0,
+                                    max = self.config.num_train_timesteps)
+        
         model_output_2 = teacher_model.unet(
                 teacher_trajectory_prev,
                 prev_timesteps,

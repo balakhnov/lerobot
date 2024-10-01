@@ -81,7 +81,7 @@ student_policy.diffusion.change_noise_scheduler_type('DDIM')
 student_policy.diffusion.num_inference_steps = NUM_STUDENT_INFERENCE_STEPS
 student_policy.train()
 student_policy.to(device)
-optimizer = torch.optim.Adam(student_policy.parameters(), lr=1e-4)
+optimizer = torch.optim.AdamW(student_policy.parameters(), lr=1e-4)
 
 teacher_policy = DiffusionPolicy.from_pretrained(pretrained_policy_path)
 teacher_policy.diffusion.change_noise_scheduler_type('DDIM')
