@@ -140,10 +140,10 @@ class DiffusionModelDistillate(DiffusionModel):
                 global_cond=global_cond,
             )
         
-        snr = self.noise_scheduler.snr(timestep=timesteps)
-        w = 1 + snr ** 2
-        # # Compute previous image: x_t -> x_t-1
-        student_trajectory_prev = self.noise_scheduler.step(model_output, timesteps, student_trajectory).prev_sample
+        # snr = self.noise_scheduler.snr(timestep=timesteps)
+        # w = 1 + snr ** 2
+        # # # Compute previous image: x_t -> x_t-1
+        # student_trajectory_prev = self.noise_scheduler.step(model_output, timesteps, student_trajectory).prev_sample
         
         # two teacher DDIM step
         teacher_trajectory = teacher_model.noise_scheduler.add_noise(trajectory, eps, timesteps)
@@ -169,11 +169,8 @@ class DiffusionModelDistillate(DiffusionModel):
         eps_predict_student = self.noise_scheduler.step_back(prev_sample=teacher_trajectory_prev_prev,
                                                              sample=teacher_trajectory,
                                                              timestep=timesteps)
-        print(model_output[0,:,:].T)
-        print(eps_predict_student[0,:,:].T)
-        # print(model_output_1[0,:,:].T)
+
         loss = F.mse_loss(eps_predict_student, model_output, reduction="none")
-        # print(f'loss: {loss.shape}')
 
         # Mask loss wherever the action is padded with copies (edges of the dataset trajectory).
         if self.config.do_mask_loss_for_padding:
