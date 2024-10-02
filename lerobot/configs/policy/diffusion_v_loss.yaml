@@ -48,8 +48,8 @@ training:
   drop_n_last_frames: 7  # ${policy.horizon} - ${policy.n_action_steps} - ${policy.n_obs_steps} + 1
 
 eval:
-  n_episodes: 50
-  batch_size: 50
+  n_episodes: 20
+  batch_size: 20
 
 policy:
   name: diffusion
@@ -92,6 +92,7 @@ policy:
   num_train_timesteps: 100
   beta_schedule: squaredcos_cap_v2
   beta_start: 0.0001
+  rescale_betas_zero_snr: True
   beta_end: 0.02
   timestep_spacing: trailing
   prediction_type: v_prediction # epsilon / sample

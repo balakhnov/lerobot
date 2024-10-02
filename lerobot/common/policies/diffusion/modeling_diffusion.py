@@ -355,7 +355,7 @@ class DiffusionModel(nn.Module):
             target = batch["action"]
         elif self.config.prediction_type == "v_prediction":
             # 2. compute alphas, betas
-            alpha_prod_t = self.noise_scheduler.alphas_cumprod[timesteps]
+            alpha_prod_t = self.noise_scheduler.alphas_cumprod[timesteps][:,None,None]
             beta_prod_t = 1 - alpha_prod_t
             target = (alpha_prod_t**0.5) * eps - (beta_prod_t**0.5) * batch["action"]
         else:

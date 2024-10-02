@@ -137,14 +137,18 @@ class DiffusionConfig:
     diffusion_step_embed_dim: int = 128
     use_film_scale_modulation: bool = True
     # Noise scheduler.
-    noise_scheduler_type: str = "DDPM"
+    noise_scheduler_type: str = "DDIM"
     num_train_timesteps: int = 100
     beta_schedule: str = "squaredcos_cap_v2"
     beta_start: float = 0.0001
     beta_end: float = 0.02
-    prediction_type: str = "epsilon"
+    prediction_type: str = "v_prediction"
+    timestep_spacing: str = "trailing"
+    rescale_betas_zero_snr: bool = True
+
     clip_sample: bool = True
     clip_sample_range: float = 1.0
+
 
     # Inference
     num_inference_steps: int | None = None
@@ -185,7 +189,7 @@ class DiffusionConfig:
                         "expect all image shapes to match."
                     )
 
-        supported_prediction_types = ["epsilon", "sample"]
+        supported_prediction_types = ["epsilon", "sample", "v_prediction"]
         if self.prediction_type not in supported_prediction_types:
             raise ValueError(
                 f"`prediction_type` must be one of {supported_prediction_types}. Got {self.prediction_type}."
