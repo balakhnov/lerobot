@@ -1,7 +1,7 @@
 defaults:
   - _self_
   - env: pusht
-  - policy: diffusion
+  - policy: diffusion_v_loss
 
 hydra:
   run:
