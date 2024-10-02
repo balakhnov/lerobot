@@ -19,11 +19,9 @@ from lerobot.common.policies.diffusion.modeling_diffusion import DiffusionPolicy
 from lerobot.common.policies.diffusion.modeling_diffusion_distillate import DiffusionPolicyDistillate
 from lerobot.scripts.eval import eval_policy
 
-# TODO: implement original algorithm, not some approximation
-# TODO: test back_step function
-# TODO: test shape and functionality of weighting function
-# TODO: evaluate performance of teacher model as function of numbers of steps
-# visualisation
+# TODO: train diffusion with v loss with training script
+# TODO: change distillation algorithm to work with v loss
+# TODO: distillate new diffusion policy
 
 device = torch.device("cuda")
 
