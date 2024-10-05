@@ -19,7 +19,7 @@ def main():
         print(f"Running distillation with {num_steps} steps")
         
         if i == 0:
-            input_policy_path = "lerobot/diffusion_pusht"
+            input_policy_path = "outputs/train/example_pusht_diffusion"
         else:
             input_policy_path = output_base_dir / f"example_pusht_diffusion_{steps[i-1]}"
 

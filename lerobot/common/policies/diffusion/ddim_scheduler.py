@@ -190,11 +190,17 @@ class DDIMSchedulerDistillation(DDIMScheduler):
             alpha_prod_t_prev = alpha_prod_t_prev[:,None,None]
         beta_prod_t = 1 - alpha_prod_t
 
-        # 7. compute x_t without "random noise" of formula (12) from https://arxiv.org/pdf/2010.02502.pdf
-        pred_epsilon = ((prev_sample - alpha_prod_t_prev ** (0.5) / alpha_prod_t ** (0.5) * sample) / 
+        if self.config.prediction_type == "v_prediction":
+            model_output = ((alpha_prod_t_prev ** (0.5) * (alpha_prod_t**0.5)  + (1 - alpha_prod_t_prev) ** (0.5) * (beta_prod_t**0.5)) * sample - prev_sample / 
+                            (alpha_prod_t_prev ** (0.5) * (beta_prod_t**0.5) + (1 - alpha_prod_t_prev) ** (0.5) * (alpha_prod_t**0.5)))
+                            
+                            
+
+        elif self.config.prediction_type == "epsilon":
+            model_output = ((prev_sample - alpha_prod_t_prev ** (0.5) / alpha_prod_t ** (0.5) * sample) / 
                         ((1 - alpha_prod_t_prev) ** (0.5)  - alpha_prod_t_prev ** (0.5) / alpha_prod_t ** (0.5) * beta_prod_t ** (0.5)))
 
-        return pred_epsilon
+        return model_output
     
     def snr(self, timestep):
         # 2. compute alphas, betas
