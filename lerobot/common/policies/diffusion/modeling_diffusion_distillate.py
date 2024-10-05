@@ -90,7 +90,7 @@ class DiffusionModelDistillate(DiffusionModel):
             high=self.num_inference_steps,
             size=shape
         ).long()
-        return self.noise_scheduler.timesteps[indexes]
+        return self.noise_scheduler.timesteps[indexes].long()
 
     def compute_loss(self, batch: dict[str, Tensor], teacher_model: DiffusionModel) -> Tensor:
         """
@@ -128,9 +128,7 @@ class DiffusionModelDistillate(DiffusionModel):
         teacher_model.noise_scheduler.set_timesteps(teacher_model.num_inference_steps)
         
         timesteps = self.distilation_timesteps(shape=(trajectory.shape[0],)).to(device=trajectory.device)
-
-        # noisy_trajectory = self.noise_scheduler.add_noise(trajectory, eps, timesteps)
-        
+        print(timesteps)
         # one student DDIM step
         student_trajectory = self.noise_scheduler.add_noise(trajectory, eps, timesteps)
 
@@ -140,20 +138,15 @@ class DiffusionModelDistillate(DiffusionModel):
                 global_cond=global_cond,
             )
         
-        # snr = self.noise_scheduler.snr(timestep=timesteps)
-        # w = 1 + snr ** 2
-        # # # Compute previous image: x_t -> x_t-1
-        # student_trajectory_prev = self.noise_scheduler.step(model_output, timesteps, student_trajectory).prev_sample
-        
         # two teacher DDIM step
-        teacher_trajectory = teacher_model.noise_scheduler.add_noise(trajectory, eps, timesteps)
+        teacher_trajectory = teacher_model.noise_scheduler.add_noise(trajectory, eps, timesteps).detach()
         model_output_1 = teacher_model.unet(
                 teacher_trajectory,
                 timesteps,
                 global_cond=global_cond,
             )
         # Compute previous image: x_t -> x_t-1
-        teacher_trajectory_prev = teacher_model.noise_scheduler.step(model_output_1, timesteps, teacher_trajectory).prev_sample
+        teacher_trajectory_prev = teacher_model.noise_scheduler.step(model_output_1, timesteps, teacher_trajectory).prev_sample.detach()
 
         prev_timesteps = timesteps - teacher_model.noise_scheduler.config.num_train_timesteps // teacher_model.noise_scheduler.num_inference_steps
         prev_timesteps = torch.clip(prev_timesteps,
@@ -164,16 +157,20 @@ class DiffusionModelDistillate(DiffusionModel):
                 teacher_trajectory_prev,
                 prev_timesteps,
                 global_cond=global_cond,
-            )
+            ).detach()
         # Compute previous image: x_t -> x_t-1
         teacher_ouptut = teacher_model.noise_scheduler.step(model_output_2, prev_timesteps, teacher_trajectory_prev)
         
-        teacher_trajectory_prev_prev = teacher_ouptut.prev_sample
+        teacher_trajectory_prev_prev = teacher_ouptut.prev_sample.detach()
         predicted_model_output = self.noise_scheduler.step_back(prev_sample=teacher_trajectory_prev_prev,
                                                              sample=teacher_trajectory,
                                                              timestep=timesteps)
-        
+        # alpha_prod_t = self.noise_scheduler.alphas_cumprod[timesteps][:,None,None]
+        # beta_prod_t = 1 - alpha_prod_t
+        # target = (alpha_prod_t**0.5) * eps - (beta_prod_t**0.5) * batch["action"]
         loss = F.mse_loss(predicted_model_output, model_output, reduction="none")
+        for i in range(8):
+            print(loss[i,:,:].mean(),loss[i,:,:].max() )
 
         # Mask loss wherever the action is padded with copies (edges of the dataset trajectory).
         if self.config.do_mask_loss_for_padding:

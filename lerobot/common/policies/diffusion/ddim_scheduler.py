@@ -191,19 +191,9 @@ class DDIMSchedulerDistillation(DDIMScheduler):
         beta_prod_t = 1 - alpha_prod_t
 
         if self.config.prediction_type == "v_prediction":
-            print('v_prediction')
-            # pred_original_sample = (alpha_prod_t**0.5) * sample - (beta_prod_t**0.5) * model_output
-            # # 6. compute "direction pointing to x_t" of formula (12) from https://arxiv.org/pdf/2010.02502.pdf
-            # pred_sample_direction = (1 - alpha_prod_t_prev) ** (0.5) * (alpha_prod_t**0.5) * model_output + (1 - alpha_prod_t_prev) ** (0.5) * (beta_prod_t**0.5) * sample
-
             # 7. compute x_t without "random noise" of formula (12) from https://arxiv.org/pdf/2010.02502.pdf
             model_output = ((prev_sample - (alpha_prod_t_prev ** (0.5) * (alpha_prod_t**0.5) + (1 - alpha_prod_t_prev) ** (0.5) * (beta_prod_t**0.5)) * sample)/
                             ((1 - alpha_prod_t_prev) ** (0.5) * (alpha_prod_t**0.5) - alpha_prod_t_prev ** (0.5) * (beta_prod_t**0.5)))
-
-
-
-            # model_output = ((alpha_prod_t_prev ** (0.5) * (alpha_prod_t**0.5)  + (1 - alpha_prod_t_prev) ** (0.5) * (beta_prod_t**0.5)) * sample - prev_sample / 
-            #                 (alpha_prod_t_prev ** (0.5) * (beta_prod_t**0.5) + (1 - alpha_prod_t_prev) ** (0.5) * (alpha_prod_t**0.5)))
         elif self.config.prediction_type == "epsilon":
             model_output = ((prev_sample - alpha_prod_t_prev ** (0.5) / alpha_prod_t ** (0.5) * sample) / 
                         ((1 - alpha_prod_t_prev) ** (0.5)  - alpha_prod_t_prev ** (0.5) / alpha_prod_t ** (0.5) * beta_prod_t ** (0.5)))
