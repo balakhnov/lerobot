@@ -169,11 +169,11 @@ class DiffusionModelDistillate(DiffusionModel):
         teacher_ouptut = teacher_model.noise_scheduler.step(model_output_2, prev_timesteps, teacher_trajectory_prev)
         
         teacher_trajectory_prev_prev = teacher_ouptut.prev_sample
-        eps_predict_student = self.noise_scheduler.step_back(prev_sample=teacher_trajectory_prev_prev,
+        predicted_model_output = self.noise_scheduler.step_back(prev_sample=teacher_trajectory_prev_prev,
                                                              sample=teacher_trajectory,
                                                              timestep=timesteps)
-
-        loss = F.mse_loss(eps_predict_student, model_output, reduction="none")
+        
+        loss = F.mse_loss(predicted_model_output, model_output, reduction="none")
 
         # Mask loss wherever the action is padded with copies (edges of the dataset trajectory).
         if self.config.do_mask_loss_for_padding:
