@@ -248,9 +248,14 @@ def fixed_flow_sampling(model, *, noise: torch.Tensor, time: torch.Tensor) -> It
     original_sample_time = model.sample_time
 
     def sample_noise(shape, device):
-        if tuple(shape) != tuple(noise.shape):
-            raise ValueError(f"Expected noise shape {tuple(noise.shape)}, got {tuple(shape)}")
-        return noise.to(device=device)
+        if tuple(shape) == tuple(noise.shape):
+            return noise.to(device=device)
+        single_sample_shape = (noise.shape[0], 1, *noise.shape[1:])
+        if tuple(shape) == single_sample_shape:
+            return noise[:, None].to(device=device)
+        raise ValueError(
+            f"Expected noise shape {tuple(noise.shape)} or {single_sample_shape}, got {tuple(shape)}"
+        )
 
     def sample_time(batch_size, device):
         if batch_size != time.shape[0]:

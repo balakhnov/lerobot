@@ -43,6 +43,7 @@ class PI05Config(PreTrainedConfig):
 
     # Flow matching parameters: see openpi `PI0Pytorch`
     num_inference_steps: int = 10
+    num_flow_samples: int = 1
     time_sampling_beta_alpha: float = 1.5
     time_sampling_beta_beta: float = 1.0
     time_sampling_scale: float = 0.999
@@ -121,6 +122,9 @@ class PI05Config(PreTrainedConfig):
 
         if self.num_hidden_layers is not None and self.num_hidden_layers < 1:
             raise ValueError("num_hidden_layers must be at least 1")
+
+        if self.num_flow_samples < 1:
+            raise ValueError("num_flow_samples must be at least 1")
 
         if self.dtype not in ["bfloat16", "float32"]:
             raise ValueError(f"Invalid dtype: {self.dtype}")

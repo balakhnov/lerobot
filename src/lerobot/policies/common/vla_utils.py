@@ -114,6 +114,25 @@ def clone_past_key_values(past_key_values):
     )
 
 
+def repeat_past_key_values(past_key_values, repeats: int):
+    """Repeat each batch entry in a DynamicCache while preserving autograd."""
+    if DynamicCache is None:
+        require_package("transformers", extra="transformers-dep")
+    if repeats < 1:
+        raise ValueError("repeats must be at least 1")
+
+    return DynamicCache(
+        tuple(
+            (
+                keys.repeat_interleave(repeats, dim=0),
+                values.repeat_interleave(repeats, dim=0),
+                sliding_window,
+            )
+            for keys, values, sliding_window in past_key_values
+        )
+    )
+
+
 def pad_vector(vector: Tensor, new_dim: int, *, truncate: bool = False) -> Tensor:
     """Pad the last dimension of a vector to new_dim with zeros.
 

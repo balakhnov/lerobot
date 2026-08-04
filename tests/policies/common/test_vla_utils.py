@@ -193,3 +193,31 @@ def test_clone_past_key_values_is_fullgraph_compilable():
     )
     assert torch.equal(cloned_keys, original_keys)
     assert torch.equal(cloned_values, original_values)
+
+
+def test_repeat_past_key_values_preserves_batch_mapping_and_gradients():
+    pytest.importorskip("transformers")
+    from transformers import DynamicCache
+
+    from lerobot.policies.common.vla_utils import repeat_past_key_values
+
+    cache = DynamicCache()
+    keys = torch.tensor([1.0, 2.0], requires_grad=True).reshape(2, 1, 1, 1)
+    values = torch.tensor([10.0, 20.0], requires_grad=True).reshape(2, 1, 1, 1)
+    keys.retain_grad()
+    values.retain_grad()
+    cache.update(keys, values, 0)
+
+    repeated = repeat_past_key_values(cache, repeats=3)
+    repeated_keys, repeated_values, _ = next(iter(repeated))
+
+    torch.testing.assert_close(
+        repeated_keys[:, 0, 0, 0], torch.tensor([1.0, 1.0, 1.0, 2.0, 2.0, 2.0])
+    )
+    torch.testing.assert_close(
+        repeated_values[:, 0, 0, 0], torch.tensor([10.0, 10.0, 10.0, 20.0, 20.0, 20.0])
+    )
+
+    (repeated_keys.sum() + repeated_values.sum()).backward()
+    torch.testing.assert_close(keys.grad, torch.full_like(keys, 3.0))
+    torch.testing.assert_close(values.grad, torch.full_like(values, 3.0))

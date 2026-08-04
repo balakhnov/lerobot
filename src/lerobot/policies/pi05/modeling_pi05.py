@@ -58,6 +58,7 @@ from ..common.vla_utils import (
     make_att_2d_masks,
     pad_vector,
     prepare_attention_masks_4d,
+    repeat_past_key_values,
     resize_with_pad_torch,
 )
 from ..pretrained import PreTrainedPolicy, T
@@ -592,52 +593,72 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
 
     def forward(self, images, img_masks, tokens, masks, actions, noise, time) -> Tensor:
         """Do a full training forward pass and compute the loss."""
-        time_expanded = time[:, None, None]
-        x_t = time_expanded * noise + (1 - time_expanded) * actions
-        u_t = noise - actions
+        if self.gradient_checkpointing_enabled and self.training:
+            raise RuntimeError("Cached-prefix training does not support gradient checkpointing")
+
+        legacy_single_sample = noise.ndim == 3
+        if legacy_single_sample:
+            noise = noise[:, None, :, :]
+        if time.ndim == 1:
+            time = time[:, None]
+        if noise.ndim != 4:
+            raise ValueError(f"Expected noise with shape [B, K, H, D], got {tuple(noise.shape)}")
+
+        batch_size, num_flow_samples, action_horizon, action_dim = noise.shape
+        if num_flow_samples != self.config.num_flow_samples:
+            raise ValueError(
+                f"Expected {self.config.num_flow_samples} flow samples, got {num_flow_samples}"
+            )
+        if actions.shape != (batch_size, action_horizon, action_dim):
+            raise ValueError(
+                f"Expected actions with shape {(batch_size, action_horizon, action_dim)}, "
+                f"got {tuple(actions.shape)}"
+            )
+        if time.shape != (batch_size, num_flow_samples):
+            raise ValueError(
+                f"Expected time with shape {(batch_size, num_flow_samples)}, got {tuple(time.shape)}"
+            )
 
         prefix_embs, prefix_pad_masks, prefix_att_masks = self.embed_prefix(images, img_masks, tokens, masks)
-        suffix_embs, suffix_pad_masks, suffix_att_masks, adarms_cond = self.embed_suffix(x_t, time)
 
         if (
             self.paligemma_with_expert.paligemma.model.language_model.layers[0].self_attn.q_proj.weight.dtype
             == torch.bfloat16
         ):
-            suffix_embs = suffix_embs.to(dtype=torch.bfloat16)
             prefix_embs = prefix_embs.to(dtype=torch.bfloat16)
 
-        pad_masks = torch.cat([prefix_pad_masks, suffix_pad_masks], dim=1)
-        att_masks = torch.cat([prefix_att_masks, suffix_att_masks], dim=1)
+        prefix_att_2d_masks = make_att_2d_masks(prefix_pad_masks, prefix_att_masks)
+        prefix_position_ids = torch.cumsum(prefix_pad_masks, dim=1) - 1
+        prefix_att_2d_masks_4d = prepare_attention_masks_4d(prefix_att_2d_masks)
+        self.paligemma_with_expert.paligemma.model.language_model.config._attn_implementation = "eager"  # noqa: SLF001
 
-        att_2d_masks = make_att_2d_masks(pad_masks, att_masks)
-        position_ids = torch.cumsum(pad_masks, dim=1) - 1
-
-        att_2d_masks_4d = prepare_attention_masks_4d(att_2d_masks)
-
-        def forward_func(prefix_embs, suffix_embs, att_2d_masks_4d, position_ids, adarms_cond):
-            (_, suffix_out), _ = self.paligemma_with_expert.forward(
-                attention_mask=att_2d_masks_4d,
-                position_ids=position_ids,
-                past_key_values=None,
-                inputs_embeds=[prefix_embs, suffix_embs],
-                use_cache=False,
-                adarms_cond=[None, adarms_cond],
-            )
-            return suffix_out
-
-        suffix_out = self._apply_checkpoint(
-            forward_func, prefix_embs, suffix_embs, att_2d_masks_4d, position_ids, adarms_cond
+        _, past_key_values = self.paligemma_with_expert.forward(
+            attention_mask=prefix_att_2d_masks_4d,
+            position_ids=prefix_position_ids,
+            past_key_values=None,
+            inputs_embeds=[prefix_embs, None],
+            use_cache=True,
         )
 
-        suffix_out = suffix_out[:, -self.config.chunk_size :]
-        suffix_out = suffix_out.to(dtype=torch.float32)
+        time_expanded = time[:, :, None, None]
+        expanded_actions = actions[:, None, :, :]
+        x_t = time_expanded * noise + (1 - time_expanded) * expanded_actions
+        u_t = noise - expanded_actions
 
-        def action_out_proj_func(suffix_out):
-            return self.action_out_proj(suffix_out)
+        if num_flow_samples > 1:
+            prefix_pad_masks = prefix_pad_masks.repeat_interleave(num_flow_samples, dim=0)
+            past_key_values = repeat_past_key_values(past_key_values, num_flow_samples)
 
-        v_t = self._apply_checkpoint(action_out_proj_func, suffix_out)
+        v_t = self.denoise_step(
+            prefix_pad_masks=prefix_pad_masks,
+            past_key_values=past_key_values,
+            x_t=x_t.reshape(batch_size * num_flow_samples, action_horizon, action_dim),
+            timestep=time.reshape(batch_size * num_flow_samples),
+        )
+        v_t = v_t.reshape(batch_size, num_flow_samples, action_horizon, action_dim)
 
-        return F.mse_loss(u_t, v_t, reduction="none")
+        losses = F.mse_loss(u_t, v_t, reduction="none")
+        return losses[:, 0] if legacy_single_sample else losses
 
     @torch.no_grad()  # see openpi `sample_actions` (slightly adapted)
     def sample_actions(
@@ -1099,23 +1120,29 @@ class PI05Policy(PreTrainedPolicy):
 
         actions = self.prepare_action(batch)
 
-        noise = self.model.sample_noise(actions.shape, actions.device)
-        time = self.model.sample_time(actions.shape[0], actions.device)
+        batch_size, action_horizon, action_dim = actions.shape
+        num_flow_samples = self.config.num_flow_samples
+        noise = self.model.sample_noise(
+            (batch_size, num_flow_samples, action_horizon, action_dim), actions.device
+        )
+        time = self.model.sample_time(batch_size * num_flow_samples, actions.device).reshape(
+            batch_size, num_flow_samples
+        )
 
         # Compute loss (no separate state needed for PI05)
         losses = self.model.forward(images, img_masks, tokens, masks, actions, noise, time)
 
         # Truncate losses to actual action dimensions
         original_action_dim = self.config.output_features[ACTION].shape[0]
-        losses = losses[:, :, :original_action_dim]
+        losses = losses[..., :original_action_dim]
 
         loss_dict = {
-            "loss_per_dim": losses.mean(dim=[0, 1]).detach().cpu().numpy().tolist(),
+            "loss_per_dim": losses.mean(dim=(0, 1, 2)).detach().cpu().numpy().tolist(),
         }
 
         if reduction == "none":
-            # Return per-sample losses (B,) by averaging over time and action dims
-            per_sample_loss = losses.mean(dim=(1, 2))
+            # Return per-sample losses (B,) by averaging over flow, time, and action dims
+            per_sample_loss = losses.mean(dim=(1, 2, 3))
             loss_dict["loss"] = per_sample_loss.mean().item()
             return per_sample_loss, loss_dict
         else:

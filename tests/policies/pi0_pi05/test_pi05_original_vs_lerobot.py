@@ -255,17 +255,9 @@ def test_pi05_sample_actions_match_openpi():
     assert_sample_actions_match_openpi()
 
 
-def test_pi05_gradient_checkpointing_forward_matches_openpi():
-    assert_forward_matches(gradient_checkpointing=True)
-
-
 def test_pi05_compile_forward_matches_openpi():
     assert_forward_matches(compile_model=True)
 
 
 def test_pi05_compile_sample_actions_match_openpi():
     assert_sample_actions_match_openpi(compile_model=True)
-
-
-def test_pi05_compile_gradient_checkpointing_forward_matches_openpi():
-    assert_forward_matches(compile_model=True, gradient_checkpointing=True)

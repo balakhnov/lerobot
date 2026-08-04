@@ -43,7 +43,7 @@ def test_pi05_overfits_one_dataset_batch():
     config = PI05Config(
         paligemma_variant="gemma_300m",
         action_expert_variant="gemma_300m",
-        num_hidden_layers=1,
+        num_hidden_layers=2,
         chunk_size=8,
         n_action_steps=8,
         num_inference_steps=1,
@@ -64,10 +64,6 @@ def test_pi05_overfits_one_dataset_batch():
         dataset_stats[key].setdefault("q01", dataset_stats[key]["min"])
         dataset_stats[key].setdefault("q99", dataset_stats[key]["max"])
     preprocessor, postprocessor = make_pre_post_processors(config, dataset_stats=dataset_stats)
-
-    assert len(policy.model.paligemma_with_expert.paligemma.model.language_model.layers) == 1
-    assert len(policy.model.paligemma_with_expert.gemma_expert.model.layers) == 1
-    assert len(policy.model.paligemma_with_expert.paligemma.model.vision_tower.encoder.layers) == 1
 
     target_actions = batch[ACTION].clone()
     batch = preprocessor(batch)
