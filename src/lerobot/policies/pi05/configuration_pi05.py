@@ -30,6 +30,7 @@ DEFAULT_IMAGE_SIZE = 224
 class PI05Config(PreTrainedConfig):
     paligemma_variant: str = "gemma_2b"
     action_expert_variant: str = "gemma_300m"
+    num_hidden_layers: int | None = None  # Optional scratch-model depth override
     dtype: str = "float32"  # Options: "bfloat16", "float32"
 
     n_obs_steps: int = 1
@@ -112,11 +113,14 @@ class PI05Config(PreTrainedConfig):
                 f"n_action_steps ({self.n_action_steps}) cannot be greater than chunk_size ({self.chunk_size})"
             )
 
-        if self.paligemma_variant not in ["gemma_300m", "gemma_2b"]:
+        if self.paligemma_variant not in ["gemma_tiny", "gemma_300m", "gemma_2b"]:
             raise ValueError(f"Invalid paligemma_variant: {self.paligemma_variant}")
 
-        if self.action_expert_variant not in ["gemma_300m", "gemma_2b"]:
+        if self.action_expert_variant not in ["gemma_tiny", "gemma_300m", "gemma_2b"]:
             raise ValueError(f"Invalid action_expert_variant: {self.action_expert_variant}")
+
+        if self.num_hidden_layers is not None and self.num_hidden_layers < 1:
+            raise ValueError("num_hidden_layers must be at least 1")
 
         if self.dtype not in ["bfloat16", "float32"]:
             raise ValueError(f"Invalid dtype: {self.dtype}")

@@ -146,18 +146,29 @@ def compute_layer_complete(inputs_embeds, attention_mask, position_ids, adarms_c
 class GemmaConfig:  # see openpi `gemma.py: Config`
     """Configuration for Gemma model variants."""
 
-    def __init__(self, width, depth, mlp_dim, num_heads, num_kv_heads, head_dim):
+    def __init__(self, width, depth, mlp_dim, num_heads, num_kv_heads, head_dim, *, tiny=False):
         self.width = width
         self.depth = depth
         self.mlp_dim = mlp_dim
         self.num_heads = num_heads
         self.num_kv_heads = num_kv_heads
         self.head_dim = head_dim
+        self.tiny = tiny
 
 
 def get_gemma_config(variant: str) -> GemmaConfig:  # see openpi `gemma.py: get_config`
     """Returns config for specified gemma variant."""
-    if variant == "gemma_300m":
+    if variant == "gemma_tiny":
+        return GemmaConfig(
+            width=64,
+            depth=1,
+            mlp_dim=128,
+            num_heads=8,
+            num_kv_heads=1,
+            head_dim=8,
+            tiny=True,
+        )
+    elif variant == "gemma_300m":
         return GemmaConfig(
             width=1024,
             depth=18,
@@ -191,6 +202,7 @@ class PaliGemmaWithExpertModel(
         use_adarms=None,
         precision: Literal["bfloat16", "float32"] = "bfloat16",
         image_size: int = DEFAULT_IMAGE_SIZE,
+        vision_num_hidden_layers: int | None = None,
         freeze_vision_encoder: bool = False,
         train_expert_only: bool = False,
     ):
@@ -216,9 +228,22 @@ class PaliGemmaWithExpertModel(
         vlm_config_hf.text_config.adarms_cond_dim = vlm_config.width if use_adarms[0] else None
         vlm_config_hf.vision_config.image_size = image_size
         vlm_config_hf.vision_config.intermediate_size = 4304
-        vlm_config_hf.vision_config.projection_dim = 2048
+        vlm_config_hf.vision_config.projection_dim = vlm_config.width
         vlm_config_hf.vision_config.projector_hidden_act = "gelu_fast"
         vlm_config_hf.vision_config.dtype = "float32"
+
+        # A compact scratch-only variant used by fast behavioral tests. Keep the
+        # released variants unchanged so their checkpoint shapes remain identical.
+        if vlm_config.tiny:
+            vlm_config_hf.hidden_size = vlm_config.width
+            vlm_config_hf.projection_dim = vlm_config.width
+            vlm_config_hf.vision_config.hidden_size = vlm_config.width
+            vlm_config_hf.vision_config.intermediate_size = vlm_config.mlp_dim
+            vlm_config_hf.vision_config.num_attention_heads = vlm_config.num_heads
+            vlm_config_hf.vision_config.num_hidden_layers = 1
+
+        if vision_num_hidden_layers is not None:
+            vlm_config_hf.vision_config.num_hidden_layers = vision_num_hidden_layers
 
         action_expert_config_hf = CONFIG_MAPPING["gemma"](
             head_dim=action_expert_config.head_dim,
@@ -408,6 +433,9 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
 
         paligemma_config = get_gemma_config(config.paligemma_variant)
         action_expert_config = get_gemma_config(config.action_expert_variant)
+        if config.num_hidden_layers is not None:
+            paligemma_config.depth = config.num_hidden_layers
+            action_expert_config.depth = config.num_hidden_layers
 
         if config.image_resolution[0] != config.image_resolution[1]:
             raise ValueError(
@@ -420,6 +448,7 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
             use_adarms=[False, True],
             precision=config.dtype,
             image_size=config.image_resolution[0],
+            vision_num_hidden_layers=config.num_hidden_layers,
             freeze_vision_encoder=config.freeze_vision_encoder,
             train_expert_only=config.train_expert_only,
         )
