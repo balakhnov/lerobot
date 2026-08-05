@@ -1,0 +1,43 @@
+# Flow-only multi-sample ablation: four independent flow samples per example.
+dataset:
+  repo_id: lerobot/libero
+  revision: a1aaacb7f6cd6ee5fb43120f673cebb0cfea7dd4
+  return_uint8: true
+
+policy:
+  type: pi05
+  pretrained_path: lerobot/pi05_libero_base
+  normalization_mapping:
+    ACTION: MEAN_STD
+    STATE: MEAN_STD
+    VISUAL: IDENTITY
+  n_action_steps: 10
+  empty_cameras: 1
+  freeze_vision_encoder: false
+  train_expert_only: false
+  gradient_checkpointing: false
+  compile_model: false
+  dtype: bfloat16
+  device: cuda
+  push_to_hub: false
+  num_flow_samples: 4
+  use_fast_auxiliary: false
+  fast_loss_weight: 0.05
+  max_action_tokens: 256
+
+output_dir: outputs/pi05_libero/flow_k4_seed1000
+job_name: pi05_libero_flow_k4_seed1000
+seed: 1000
+cudnn_deterministic: true
+# Per-device batch size. K=4 uses more action-expert memory than K=1.
+batch_size: 4
+num_workers: 8
+steps: 6000
+log_freq: 50
+save_freq: 1000
+env_eval_freq: 0
+
+wandb:
+  enable: true
+  project: pi05-libero-fast-ar
+  notes: Flow-only control with four independent flow samples.
