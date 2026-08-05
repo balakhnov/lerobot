@@ -47,6 +47,8 @@ else:
 from lerobot.configs import PreTrainedConfig
 from lerobot.utils.constants import (
     ACTION,
+    ACTION_TOKEN_MASK,
+    ACTION_TOKENS,
     OBS_LANGUAGE_ATTENTION_MASK,
     OBS_LANGUAGE_TOKENS,
 )
@@ -60,6 +62,7 @@ from ..common.vla_utils import (
     prepare_attention_masks_4d,
     repeat_past_key_values,
     resize_with_pad_torch,
+    trim_past_key_values,
 )
 from ..pretrained import PreTrainedPolicy, T
 from ..rtc.modeling_rtc import RTCProcessor
@@ -511,9 +514,17 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
         )
 
     def embed_prefix(
-        self, images, img_masks, tokens, masks
+        self,
+        images,
+        img_masks,
+        tokens,
+        masks,
+        fast_inputs=None,
+        fast_input_masks=None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Embed images with SigLIP and language tokens with embedding layer."""
+        """Embed conditioning inputs and an optional causal FAST teacher-forcing tail."""
+        if (fast_inputs is None) != (fast_input_masks is None):
+            raise ValueError("fast_inputs and fast_input_masks must be provided together")
         embs = []
         pad_masks = []
         att_masks = []
@@ -543,6 +554,13 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
         num_lang_embs = lang_emb.shape[1]
         att_masks += [0] * num_lang_embs
 
+        if fast_inputs is not None:
+            fast_emb = self._apply_checkpoint(lang_embed_func, fast_inputs)
+            embs.append(fast_emb)
+            pad_masks.append(fast_input_masks)
+            # Every FAST token starts a new attention group, giving causal FAST-to-FAST attention.
+            att_masks += [1] * fast_emb.shape[1]
+
         embs = torch.cat(embs, dim=1)
         pad_masks = torch.cat(pad_masks, dim=1)
         att_masks = torch.tensor(att_masks, dtype=torch.bool, device=pad_masks.device)
@@ -551,6 +569,64 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
         att_masks = att_masks[None, :].expand(bsize, len(att_masks))
 
         return embs, pad_masks, att_masks
+
+    def prepare_fast_inputs(self, fast_targets: Tensor, fast_target_masks: Tensor) -> tuple[Tensor, Tensor]:
+        """Shift FAST targets right for teacher forcing while retaining a fixed padded tail."""
+        if fast_targets.ndim != 2 or fast_target_masks.shape != fast_targets.shape:
+            raise ValueError(
+                "Expected FAST targets and masks with matching [B, T] shapes, got "
+                f"{tuple(fast_targets.shape)} and {tuple(fast_target_masks.shape)}"
+            )
+        if fast_targets.shape[1] < 1:
+            raise ValueError("FAST target sequence must contain at least one position")
+        bos_token_id = self.paligemma_with_expert.paligemma.config.text_config.bos_token_id
+        if bos_token_id is None:
+            raise RuntimeError("PaliGemma configuration does not define a BOS token")
+        bos = torch.full(
+            (fast_targets.shape[0], 1),
+            int(bos_token_id),
+            dtype=fast_targets.dtype,
+            device=fast_targets.device,
+        )
+        bos_mask = torch.ones(
+            fast_targets.shape[0],
+            1,
+            dtype=torch.bool,
+            device=fast_target_masks.device,
+        )
+        fast_inputs = torch.cat([bos, fast_targets[:, :-1]], dim=1)
+        fast_input_masks = torch.cat([bos_mask, fast_target_masks[:, :-1].to(dtype=torch.bool)], dim=1)
+        return fast_inputs, fast_input_masks
+
+    def compute_fast_loss(
+        self,
+        fast_hidden: Tensor,
+        fast_targets: Tensor,
+        fast_target_masks: Tensor,
+    ) -> tuple[Tensor, Tensor]:
+        """Compute masked next-token FAST CE and accuracy for each batch example."""
+        if fast_hidden.shape[:2] != fast_targets.shape or fast_target_masks.shape != fast_targets.shape:
+            raise ValueError("FAST hidden states, targets, and masks must share their [B, T] shape")
+        valid_positions = fast_target_masks.to(device=fast_hidden.device, dtype=torch.bool)
+        valid_counts = valid_positions.sum(dim=1)
+        if bool((valid_counts == 0).any()):
+            raise ValueError("Every training example must contain at least one valid FAST target")
+
+        selected_hidden = fast_hidden[valid_positions]
+        selected_targets = fast_targets.to(device=fast_hidden.device)[valid_positions]
+        logits = F.linear(
+            selected_hidden,
+            self.paligemma_with_expert.paligemma.lm_head.weight,
+        ).float()
+        token_loss = F.cross_entropy(logits, selected_targets, reduction="none")
+        example_indices = valid_positions.nonzero(as_tuple=False)[:, 0]
+        loss_sum = token_loss.new_zeros(fast_hidden.shape[0]).index_add(0, example_indices, token_loss)
+        fast_loss = loss_sum / valid_counts.to(device=loss_sum.device, dtype=loss_sum.dtype)
+
+        correct = (logits.argmax(dim=-1) == selected_targets).to(dtype=logits.dtype)
+        accuracy_sum = correct.new_zeros(fast_hidden.shape[0]).index_add(0, example_indices, correct)
+        fast_accuracy = accuracy_sum / valid_counts.to(device=accuracy_sum.device, dtype=accuracy_sum.dtype)
+        return fast_loss, fast_accuracy
 
     def embed_suffix(self, noisy_actions, timestep):
         """Embed noisy_actions, timestep to prepare for Expert Gemma processing."""
@@ -591,7 +667,18 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
 
         return action_emb, pad_masks, att_masks, adarms_cond
 
-    def forward(self, images, img_masks, tokens, masks, actions, noise, time) -> Tensor:
+    def forward(
+        self,
+        images,
+        img_masks,
+        tokens,
+        masks,
+        actions,
+        noise,
+        time,
+        fast_action_tokens=None,
+        fast_action_masks=None,
+    ) -> Tensor | tuple[Tensor, Tensor, Tensor]:
         """Do a full training forward pass and compute the loss."""
         if self.gradient_checkpointing_enabled and self.training:
             raise RuntimeError("Cached-prefix training does not support gradient checkpointing")
@@ -606,9 +693,7 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
 
         batch_size, num_flow_samples, action_horizon, action_dim = noise.shape
         if num_flow_samples != self.config.num_flow_samples:
-            raise ValueError(
-                f"Expected {self.config.num_flow_samples} flow samples, got {num_flow_samples}"
-            )
+            raise ValueError(f"Expected {self.config.num_flow_samples} flow samples, got {num_flow_samples}")
         if actions.shape != (batch_size, action_horizon, action_dim):
             raise ValueError(
                 f"Expected actions with shape {(batch_size, action_horizon, action_dim)}, "
@@ -619,7 +704,25 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
                 f"Expected time with shape {(batch_size, num_flow_samples)}, got {tuple(time.shape)}"
             )
 
-        prefix_embs, prefix_pad_masks, prefix_att_masks = self.embed_prefix(images, img_masks, tokens, masks)
+        fast_inputs = None
+        fast_input_masks = None
+        fast_length = 0
+        if self.config.use_fast_auxiliary:
+            if fast_action_tokens is None or fast_action_masks is None:
+                raise ValueError("FAST auxiliary training requires action tokens and token masks")
+            fast_inputs, fast_input_masks = self.prepare_fast_inputs(fast_action_tokens, fast_action_masks)
+            fast_length = fast_inputs.shape[1]
+        elif fast_action_tokens is not None or fast_action_masks is not None:
+            raise ValueError("FAST tokens were provided but use_fast_auxiliary is disabled")
+
+        prefix_embs, prefix_pad_masks, prefix_att_masks = self.embed_prefix(
+            images,
+            img_masks,
+            tokens,
+            masks,
+            fast_inputs=fast_inputs,
+            fast_input_masks=fast_input_masks,
+        )
 
         if (
             self.paligemma_with_expert.paligemma.model.language_model.layers[0].self_attn.q_proj.weight.dtype
@@ -632,13 +735,26 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
         prefix_att_2d_masks_4d = prepare_attention_masks_4d(prefix_att_2d_masks)
         self.paligemma_with_expert.paligemma.model.language_model.config._attn_implementation = "eager"  # noqa: SLF001
 
-        _, past_key_values = self.paligemma_with_expert.forward(
+        prefix_outputs, past_key_values = self.paligemma_with_expert.forward(
             attention_mask=prefix_att_2d_masks_4d,
             position_ids=prefix_position_ids,
             past_key_values=None,
             inputs_embeds=[prefix_embs, None],
             use_cache=True,
         )
+
+        fast_loss = None
+        fast_accuracy = None
+        if fast_length:
+            fast_hidden = prefix_outputs[0][:, -fast_length:]
+            fast_loss, fast_accuracy = self.compute_fast_loss(
+                fast_hidden,
+                fast_action_tokens,
+                fast_action_masks,
+            )
+            # The flow expert must never condition on teacher-forced action targets.
+            past_key_values = trim_past_key_values(past_key_values, tail_tokens=fast_length)
+            prefix_pad_masks = prefix_pad_masks[:, :-fast_length]
 
         time_expanded = time[:, :, None, None]
         expanded_actions = actions[:, None, :, :]
@@ -658,7 +774,10 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
         v_t = v_t.reshape(batch_size, num_flow_samples, action_horizon, action_dim)
 
         losses = F.mse_loss(u_t, v_t, reduction="none")
-        return losses[:, 0] if legacy_single_sample else losses
+        losses = losses[:, 0] if legacy_single_sample else losses
+        if fast_loss is not None and fast_accuracy is not None:
+            return losses, fast_loss, fast_accuracy
+        return losses
 
     @torch.no_grad()  # see openpi `sample_actions` (slightly adapted)
     def sample_actions(
@@ -1130,7 +1249,28 @@ class PI05Policy(PreTrainedPolicy):
         )
 
         # Compute loss (no separate state needed for PI05)
-        losses = self.model.forward(images, img_masks, tokens, masks, actions, noise, time)
+        if self.config.use_fast_auxiliary:
+            fast_action_tokens = batch.get(ACTION_TOKENS)
+            fast_action_masks = batch.get(ACTION_TOKEN_MASK)
+            if fast_action_tokens is None or fast_action_masks is None:
+                raise ValueError(
+                    f"PI0.5 FAST auxiliary training requires {ACTION_TOKENS} and {ACTION_TOKEN_MASK}"
+                )
+            losses, fast_loss, fast_accuracy = self.model.forward(
+                images,
+                img_masks,
+                tokens,
+                masks,
+                actions,
+                noise,
+                time,
+                fast_action_tokens,
+                fast_action_masks,
+            )
+        else:
+            losses = self.model.forward(images, img_masks, tokens, masks, actions, noise, time)
+            fast_loss = None
+            fast_accuracy = None
 
         # Truncate losses to actual action dimensions
         original_action_dim = self.config.output_features[ACTION].shape[0]
@@ -1140,14 +1280,24 @@ class PI05Policy(PreTrainedPolicy):
             "loss_per_dim": losses.mean(dim=(0, 1, 2)).detach().cpu().numpy().tolist(),
         }
 
+        per_sample_flow_loss = losses.mean(dim=(1, 2, 3))
+        per_sample_loss = per_sample_flow_loss
+        if fast_loss is not None and fast_accuracy is not None:
+            per_sample_loss = per_sample_flow_loss + self.config.fast_loss_weight * fast_loss
+            loss_dict.update(
+                {
+                    "flow_loss": per_sample_flow_loss.detach().mean().item(),
+                    "fast_loss": fast_loss.detach().mean().item(),
+                    "fast_accuracy": fast_accuracy.detach().mean().item(),
+                }
+            )
+
         if reduction == "none":
-            # Return per-sample losses (B,) by averaging over flow, time, and action dims
-            per_sample_loss = losses.mean(dim=(1, 2, 3))
             loss_dict["loss"] = per_sample_loss.mean().item()
             return per_sample_loss, loss_dict
         else:
             # Default: return scalar mean loss
-            loss = losses.mean()
+            loss = per_sample_loss.mean()
             loss_dict["loss"] = loss.item()
             return loss, loss_dict
 

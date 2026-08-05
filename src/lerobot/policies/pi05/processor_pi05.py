@@ -25,6 +25,7 @@ from lerobot.configs import PipelineFeatureType, PolicyFeature
 from lerobot.lerobot_types import EnvTransition, TransitionKey
 from lerobot.processor import (
     AbsoluteActionsProcessorStep,
+    ActionTokenizerProcessorStep,
     PolicyAction,
     PolicyProcessorPipeline,
     ProcessorStep,
@@ -138,13 +139,23 @@ def make_pi05_pre_post_processors(
         steps.normalize,
         Pi05PrepareStateTokenizerProcessorStep(max_state_dim=config.max_state_dim),
         TokenizerProcessorStep(
-            tokenizer_name="google/paligemma-3b-pt-224",
+            tokenizer_name=config.text_tokenizer_name,
             max_length=config.tokenizer_max_length,
             padding_side="right",
             padding="max_length",
         ),
-        steps.to_device,
     ]
+    if config.use_fast_auxiliary:
+        input_steps.append(
+            ActionTokenizerProcessorStep(
+                action_tokenizer_name=config.action_tokenizer_name,
+                max_action_tokens=config.max_action_tokens,
+                fast_skip_tokens=config.fast_skip_tokens,
+                include_control_tokens=False,
+                paligemma_tokenizer_name=config.text_tokenizer_name,
+            )
+        )
+    input_steps.append(steps.to_device)
 
     output_steps: list[ProcessorStep] = [
         steps.unnormalize,

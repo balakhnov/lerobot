@@ -27,7 +27,7 @@ from lerobot.configs import FeatureType, PolicyFeature  # noqa: E402
 from lerobot.policies.pi05 import PI05Policy  # noqa: E402
 from lerobot.policies.pi05.configuration_pi05 import PI05Config  # noqa: E402
 from lerobot.policies.pi05.processor_pi05 import make_pi05_pre_post_processors  # noqa: E402
-from lerobot.utils.constants import ACTION, OBS_STATE  # noqa: E402
+from lerobot.utils.constants import ACTION, ACTION_TOKEN_MASK, ACTION_TOKENS, OBS_STATE  # noqa: E402
 from tests.policies.pi0_pi05.utils.openpi_parity import (  # noqa: E402
     IMAGE_KEYS,
     assert_processor_inputs_match_lerobot,
@@ -153,3 +153,18 @@ def test_pi05_processor_inputs_match_openpi_reference():
         rtol=0,
         atol=0,
     )
+
+
+def test_pi05_joint_processor_adds_fast_payload_tokens():
+    pytest.importorskip("scipy", reason="FAST action tokenization requires lerobot[pi]")
+    config = create_pi05_config()
+    config.use_fast_auxiliary = True
+    config.max_action_tokens = 32
+    preprocessor, _ = make_pi05_pre_post_processors(config=config, dataset_stats=DUMMY_DATASET_STATS)
+
+    batch = preprocessor(create_dummy_data())
+
+    assert batch[ACTION_TOKENS].shape == (2, config.max_action_tokens)
+    assert batch[ACTION_TOKEN_MASK].shape == (2, config.max_action_tokens)
+    assert batch[ACTION_TOKEN_MASK].dtype == torch.bool
+    assert batch[ACTION_TOKEN_MASK].any(dim=1).all()

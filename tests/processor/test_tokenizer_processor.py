@@ -26,7 +26,7 @@ import torch
 
 from lerobot.configs.types import FeatureType, PipelineFeatureType, PolicyFeature
 from lerobot.lerobot_types import TransitionKey
-from lerobot.processor import DataProcessorPipeline, TokenizerProcessorStep
+from lerobot.processor import ActionTokenizerProcessorStep, DataProcessorPipeline, TokenizerProcessorStep
 from lerobot.processor.converters import create_transition, identity_transition
 from lerobot.utils.constants import (
     ACTION,
@@ -88,10 +88,60 @@ class MockTokenizer:
         return result
 
 
+class MockActionTokenizer:
+    def __call__(self, _actions):
+        return torch.tensor([[3, 4]], dtype=torch.long)
+
+
+class MockPaliGemmaTokenizer:
+    vocab_size = 1000
+    bos_token_id = 2
+
+    def encode(self, text, add_special_tokens=True):
+        if text == "Action: ":
+            return [10, 11]
+        if text == "|":
+            return [12]
+        raise ValueError(text)
+
+
 @pytest.fixture
 def mock_tokenizer():
     """Provide a mock tokenizer for testing."""
     return MockTokenizer(vocab_size=100)
+
+
+@skip_if_package_missing("transformers")
+@patch("lerobot.processor.tokenizer_processor.AutoTokenizer")
+def test_action_tokenizer_payload_only_omits_control_tokens(mock_auto_tokenizer):
+    mock_auto_tokenizer.from_pretrained.return_value = MockPaliGemmaTokenizer()
+    processor = ActionTokenizerProcessorStep(
+        action_tokenizer_input_object=MockActionTokenizer(),
+        max_action_tokens=4,
+        fast_skip_tokens=128,
+        include_control_tokens=False,
+    )
+
+    tokens, mask = processor._tokenize_action(torch.zeros(1, 2, 3))
+
+    torch.testing.assert_close(tokens, torch.tensor([[868, 867, 0, 0]]))
+    torch.testing.assert_close(mask, torch.tensor([[True, True, False, False]]))
+
+
+@skip_if_package_missing("transformers")
+@patch("lerobot.processor.tokenizer_processor.AutoTokenizer")
+def test_action_tokenizer_control_tokens_remain_enabled_by_default(mock_auto_tokenizer):
+    mock_auto_tokenizer.from_pretrained.return_value = MockPaliGemmaTokenizer()
+    processor = ActionTokenizerProcessorStep(
+        action_tokenizer_input_object=MockActionTokenizer(),
+        max_action_tokens=8,
+        fast_skip_tokens=128,
+    )
+
+    tokens, mask = processor._tokenize_action(torch.zeros(1, 2, 3))
+
+    torch.testing.assert_close(tokens, torch.tensor([[2, 10, 11, 868, 867, 12, 0, 0]]))
+    torch.testing.assert_close(mask, torch.tensor([[True, True, True, True, True, True, False, False]]))
 
 
 @skip_if_package_missing("transformers")

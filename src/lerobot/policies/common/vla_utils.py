@@ -133,6 +133,27 @@ def repeat_past_key_values(past_key_values, repeats: int):
     )
 
 
+def trim_past_key_values(past_key_values, tail_tokens: int):
+    """Remove a fixed token tail from every layer of a DynamicCache without detaching gradients."""
+    if DynamicCache is None:
+        require_package("transformers", extra="transformers-dep")
+    if tail_tokens < 0:
+        raise ValueError("tail_tokens must be non-negative")
+    if tail_tokens == 0:
+        return past_key_values
+
+    return DynamicCache(
+        tuple(
+            (
+                keys[..., :-tail_tokens, :],
+                values[..., :-tail_tokens, :],
+                sliding_window,
+            )
+            for keys, values, sliding_window in past_key_values
+        )
+    )
+
+
 def pad_vector(vector: Tensor, new_dim: int, *, truncate: bool = False) -> Tensor:
     """Pad the last dimension of a vector to new_dim with zeros.
 

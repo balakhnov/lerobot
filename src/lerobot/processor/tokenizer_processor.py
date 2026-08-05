@@ -341,6 +341,7 @@ class ActionTokenizerProcessorStep(ActionProcessorStep):
         trust_remote_code: Whether to trust remote code when loading the tokenizer (required for some tokenizers).
         action_tokenizer: The internal tokenizer/processor instance, loaded during initialization.
         paligemma_tokenizer_name: The name of a pretrained PaliGemma tokenizer from the Hugging Face Hub (e.g., "google/paligemma-3b-pt-224").
+        include_control_tokens: Whether to wrap FAST payload tokens with BOS, ``Action: ``, and ``|``.
     """
 
     action_tokenizer_name: str | None = None
@@ -348,6 +349,7 @@ class ActionTokenizerProcessorStep(ActionProcessorStep):
     trust_remote_code: bool = True
     max_action_tokens: int = 256
     fast_skip_tokens: int = 128
+    include_control_tokens: bool = True
     paligemma_tokenizer_name: str = "google/paligemma-3b-pt-224"
     # Internal tokenizer instance (not part of the config)
     action_tokenizer: Any = field(default=None, init=False, repr=False)
@@ -476,19 +478,20 @@ class ActionTokenizerProcessorStep(ActionProcessorStep):
             if tokens.dim() > 1:
                 tokens = tokens.flatten()
 
-            bos_id = self._paligemma_tokenizer.bos_token_id
-            # add bos
-            tokens = torch.cat(
-                [
-                    torch.tensor([bos_id], device=action.device),
-                    torch.tensor(
-                        self._paligemma_tokenizer.encode("Action: ", add_special_tokens=False),
-                        device=action.device,
-                    ),
-                    self._act_tokens_to_paligemma_tokens(tokens),
-                    torch.tensor(self._paligemma_tokenizer.encode("|"), device=action.device),
-                ]
-            )
+            tokens = self._act_tokens_to_paligemma_tokens(tokens)
+            if self.include_control_tokens:
+                bos_id = self._paligemma_tokenizer.bos_token_id
+                tokens = torch.cat(
+                    [
+                        torch.tensor([bos_id], device=action.device),
+                        torch.tensor(
+                            self._paligemma_tokenizer.encode("Action: ", add_special_tokens=False),
+                            device=action.device,
+                        ),
+                        tokens,
+                        torch.tensor(self._paligemma_tokenizer.encode("|"), device=action.device),
+                    ]
+                )
 
             # Truncate or pad to max_action_tokens
             if len(tokens) > self.max_action_tokens:

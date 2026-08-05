@@ -51,6 +51,14 @@ class PI05Config(PreTrainedConfig):
     min_period: float = 4e-3
     max_period: float = 4.0
 
+    # Optional FAST autoregressive auxiliary objective. Continuous flow inference is unchanged.
+    use_fast_auxiliary: bool = False
+    fast_loss_weight: float = 0.05
+    max_action_tokens: int = 256
+    text_tokenizer_name: str = "google/paligemma-3b-pt-224"
+    action_tokenizer_name: str = "lerobot/fast-action-tokenizer"
+    fast_skip_tokens: int = 128
+
     # Relative actions: converts absolute actions to relative (relative to state).
     use_relative_actions: bool = False
     # Joint names to exclude from relative (kept absolute). Empty list = all dims relative.
@@ -125,6 +133,15 @@ class PI05Config(PreTrainedConfig):
 
         if self.num_flow_samples < 1:
             raise ValueError("num_flow_samples must be at least 1")
+
+        if self.fast_loss_weight < 0:
+            raise ValueError("fast_loss_weight must be non-negative")
+
+        if self.max_action_tokens < 1:
+            raise ValueError("max_action_tokens must be at least 1")
+
+        if self.use_fast_auxiliary and self.train_expert_only:
+            raise ValueError("use_fast_auxiliary is incompatible with train_expert_only")
 
         if self.dtype not in ["bfloat16", "float32"]:
             raise ValueError(f"Invalid dtype: {self.dtype}")
