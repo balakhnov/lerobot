@@ -130,6 +130,27 @@ def test_action_tokenizer_payload_only_omits_control_tokens(mock_auto_tokenizer)
 
 @skip_if_package_missing("transformers")
 @patch("lerobot.processor.tokenizer_processor.AutoTokenizer")
+def test_action_tokenizer_serializes_payload_only_settings(mock_auto_tokenizer):
+    mock_auto_tokenizer.from_pretrained.return_value = MockPaliGemmaTokenizer()
+    processor = ActionTokenizerProcessorStep(
+        action_tokenizer_input_object=MockActionTokenizer(),
+        max_action_tokens=17,
+        fast_skip_tokens=321,
+        include_control_tokens=False,
+        paligemma_tokenizer_name="test/paligemma-tokenizer",
+    )
+
+    assert processor.get_config() == {
+        "trust_remote_code": True,
+        "max_action_tokens": 17,
+        "fast_skip_tokens": 321,
+        "include_control_tokens": False,
+        "paligemma_tokenizer_name": "test/paligemma-tokenizer",
+    }
+
+
+@skip_if_package_missing("transformers")
+@patch("lerobot.processor.tokenizer_processor.AutoTokenizer")
 def test_action_tokenizer_control_tokens_remain_enabled_by_default(mock_auto_tokenizer):
     mock_auto_tokenizer.from_pretrained.return_value = MockPaliGemmaTokenizer()
     processor = ActionTokenizerProcessorStep(

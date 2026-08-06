@@ -24,8 +24,14 @@ from transformers import DynamicCache  # noqa: E402
 
 from lerobot.configs.types import FeatureType, PolicyFeature  # noqa: E402
 from lerobot.policies.common.vla_utils import make_att_2d_masks, trim_past_key_values  # noqa: E402
+from lerobot.policies.factory import make_pre_post_processors  # noqa: E402
 from lerobot.policies.pi05 import PI05Config  # noqa: E402
 from lerobot.policies.pi05.modeling_pi05 import PI05Policy, PI05Pytorch  # noqa: E402
+from lerobot.processor import (  # noqa: E402
+    ActionTokenizerProcessorStep,
+    DeviceProcessorStep,
+    PolicyProcessorPipeline,
+)
 from lerobot.utils.constants import (  # noqa: E402
     ACTION,
     ACTION_TOKEN_MASK,
@@ -86,6 +92,42 @@ def test_fast_auxiliary_config_validation():
         PI05Config(max_action_tokens=0)
     with pytest.raises(ValueError, match="incompatible with train_expert_only"):
         PI05Config(use_fast_auxiliary=True, train_expert_only=True)
+
+
+def test_pretrained_flow_only_processor_is_upgraded_for_fast_auxiliary(monkeypatch):
+    config = make_tiny_config(use_fast_auxiliary=True)
+    preprocessor = PolicyProcessorPipeline(
+        steps=[DeviceProcessorStep(device="cpu")],
+        name="policy_preprocessor",
+    )
+    postprocessor = PolicyProcessorPipeline(steps=[], name="policy_postprocessor")
+    loaded_pipelines = iter((preprocessor, postprocessor))
+
+    monkeypatch.setattr(
+        PolicyProcessorPipeline,
+        "from_pretrained",
+        classmethod(lambda cls, **kwargs: next(loaded_pipelines)),
+    )
+    monkeypatch.setattr(ActionTokenizerProcessorStep, "__post_init__", lambda self: None)
+
+    loaded_preprocessor, _ = make_pre_post_processors(
+        policy_cfg=config,
+        pretrained_path="lerobot/pi05_libero_base",
+    )
+
+    action_tokenizer_indices = [
+        index
+        for index, step in enumerate(loaded_preprocessor.steps)
+        if isinstance(step, ActionTokenizerProcessorStep)
+    ]
+    device_index = next(
+        index for index, step in enumerate(loaded_preprocessor.steps) if isinstance(step, DeviceProcessorStep)
+    )
+    assert action_tokenizer_indices == [device_index - 1]
+    action_tokenizer = loaded_preprocessor.steps[action_tokenizer_indices[0]]
+    assert action_tokenizer.max_action_tokens == config.max_action_tokens
+    assert action_tokenizer.fast_skip_tokens == config.fast_skip_tokens
+    assert action_tokenizer.include_control_tokens is False
 
 
 def test_prepare_fast_inputs_shifts_right_and_preserves_target_mask():

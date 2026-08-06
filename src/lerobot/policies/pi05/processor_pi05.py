@@ -26,6 +26,7 @@ from lerobot.lerobot_types import EnvTransition, TransitionKey
 from lerobot.processor import (
     AbsoluteActionsProcessorStep,
     ActionTokenizerProcessorStep,
+    DeviceProcessorStep,
     PolicyAction,
     PolicyProcessorPipeline,
     ProcessorStep,
@@ -38,6 +39,58 @@ from lerobot.processor import (
 from lerobot.utils.constants import OBS_STATE
 
 from .configuration_pi05 import PI05Config
+
+
+def _make_pi05_action_tokenizer_step(config: PI05Config) -> ActionTokenizerProcessorStep:
+    return ActionTokenizerProcessorStep(
+        action_tokenizer_name=config.action_tokenizer_name,
+        max_action_tokens=config.max_action_tokens,
+        fast_skip_tokens=config.fast_skip_tokens,
+        include_control_tokens=False,
+        paligemma_tokenizer_name=config.text_tokenizer_name,
+    )
+
+
+def _action_tokenizer_matches_config(step: ActionTokenizerProcessorStep, config: PI05Config) -> bool:
+    return (
+        step.action_tokenizer_name == config.action_tokenizer_name
+        and step.max_action_tokens == config.max_action_tokens
+        and step.fast_skip_tokens == config.fast_skip_tokens
+        and step.include_control_tokens is False
+        and step.paligemma_tokenizer_name == config.text_tokenizer_name
+    )
+
+
+def reconcile_pi05_processors(
+    config: PI05Config,
+    preprocessor: PolicyProcessorPipeline,
+    postprocessor: PolicyProcessorPipeline,
+) -> tuple[PolicyProcessorPipeline, PolicyProcessorPipeline]:
+    """Reconcile checkpoint-loaded pipelines with the active PI0.5 loss configuration.
+
+    Flow-only checkpoints predate the optional FAST action objective, so their serialized
+    preprocessor has no action-tokenizer step. Add or remove that step to match the active config,
+    and keep it immediately before device transfer as in a freshly constructed PI0.5 pipeline.
+    """
+    steps = list(preprocessor.steps)
+    existing_action_tokenizers = [step for step in steps if isinstance(step, ActionTokenizerProcessorStep)]
+    steps = [step for step in steps if not isinstance(step, ActionTokenizerProcessorStep)]
+
+    if config.use_fast_auxiliary:
+        action_tokenizer = next(
+            (step for step in existing_action_tokenizers if _action_tokenizer_matches_config(step, config)),
+            None,
+        )
+        if action_tokenizer is None:
+            action_tokenizer = _make_pi05_action_tokenizer_step(config)
+        insert_index = next(
+            (index for index, step in enumerate(steps) if isinstance(step, DeviceProcessorStep)),
+            len(steps),
+        )
+        steps.insert(insert_index, action_tokenizer)
+
+    preprocessor.steps = steps
+    return preprocessor, postprocessor
 
 
 @ProcessorStepRegistry.register(name="pi05_prepare_state_tokenizer_processor_step")
@@ -146,15 +199,7 @@ def make_pi05_pre_post_processors(
         ),
     ]
     if config.use_fast_auxiliary:
-        input_steps.append(
-            ActionTokenizerProcessorStep(
-                action_tokenizer_name=config.action_tokenizer_name,
-                max_action_tokens=config.max_action_tokens,
-                fast_skip_tokens=config.fast_skip_tokens,
-                include_control_tokens=False,
-                paligemma_tokenizer_name=config.text_tokenizer_name,
-            )
-        )
+        input_steps.append(_make_pi05_action_tokenizer_step(config))
     input_steps.append(steps.to_device)
 
     output_steps: list[ProcessorStep] = [
