@@ -41,4 +41,4 @@ env_eval_freq: 0
 wandb:
   enable: true
   project: pi05-libero-fast-ar
-  notes: Flow-only control with four independent flow samples.
+  notes: Flow-only control with eight independent flow samples.

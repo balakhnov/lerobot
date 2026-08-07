@@ -30,8 +30,8 @@ job_name: pi05_libero_fast_k4_seed1000
 seed: 1000
 cudnn_deterministic: true
 # Per-device microbatch size. K=4 plus FAST is the highest-memory experiment.
-batch_size: 6
-gradient_accumulation_steps: 6
+batch_size: 8
+gradient_accumulation_steps: 4
 num_workers: 8
 steps: 6000
 log_freq: 50
@@ -41,4 +41,4 @@ env_eval_freq: 0
 wandb:
   enable: true
   project: pi05-libero-fast-ar
-  notes: Joint FAST auxiliary and flow matching with four independent flow samples.
+  notes: Joint FAST auxiliary and flow matching with eight independent flow samples.
