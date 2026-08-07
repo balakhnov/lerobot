@@ -41,6 +41,8 @@ from lerobot.common.train_utils import (
     get_step_identifier,
     load_fsdp_optimizer_state,
     load_training_batch_size,
+    load_training_consumed_microbatches,
+    load_training_gradient_accumulation_steps,
     load_training_num_processes,
     load_training_state,
     push_checkpoint_to_hub,
@@ -102,6 +104,65 @@ def _dataloader_worker_kwargs(cfg: TrainPipelineConfig) -> dict[str, Any]:
     }
 
 
+def _resolve_accelerator(cfg: TrainPipelineConfig, accelerator: "Accelerator | None" = None) -> "Accelerator":
+    """Create or validate the Accelerator used by the training loop."""
+    from accelerate import Accelerator
+    from accelerate.utils import (
+        DistributedDataParallelKwargs,
+        DistributedType,
+        GradientAccumulationPlugin,
+    )
+
+    configured_steps = cfg.gradient_accumulation_steps
+    if accelerator is None:
+        ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
+        force_cpu = cfg.trainable_config.device == "cpu"
+        has_policy_dtype = hasattr(cfg.trainable_config, "dtype")
+        policy_dtype = getattr(cfg.trainable_config, "dtype", None)
+        mixed_precision = {"bfloat16": "bf16", "float16": "fp16", "float32": "no"}.get(policy_dtype)
+        if not has_policy_dtype and getattr(cfg.trainable_config, "use_amp", False):
+            device_type = torch.device(cfg.trainable_config.device).type
+            autocast_dtype = torch.get_autocast_dtype(device_type)
+            mixed_precision = {torch.bfloat16: "bf16", torch.float16: "fp16"}[autocast_dtype]
+
+        accelerator = Accelerator(
+            gradient_accumulation_plugin=GradientAccumulationPlugin(
+                num_steps=configured_steps,
+                # LeRobot cycles the dataloader and owns optimizer-step boundaries. Letting
+                # Accelerate synchronize at end-of-dataloader would create partial updates.
+                sync_with_dataloader=False,
+            ),
+            step_scheduler_with_optimizer=False,
+            mixed_precision=mixed_precision,
+            kwargs_handlers=[ddp_kwargs],
+            cpu=force_cpu,
+        )
+
+    accelerator_steps = accelerator.gradient_accumulation_steps
+    if accelerator_steps != configured_steps:
+        raise ValueError(
+            "configured gradient accumulation steps "
+            f"({configured_steps}) do not match the injected accelerator ({accelerator_steps})"
+        )
+
+    if configured_steps > 1 and accelerator.distributed_type == DistributedType.FSDP:
+        raise NotImplementedError("FSDP gradient accumulation is not supported yet")
+
+    if configured_steps > 1 and accelerator.gradient_state.sync_with_dataloader:
+        raise ValueError(
+            "Gradient accumulation requires sync_with_dataloader=False because LeRobot owns "
+            "optimizer-step boundaries"
+        )
+
+    if configured_steps > 1 and accelerator.step_scheduler_with_optimizer:
+        raise ValueError(
+            "Gradient accumulation requires step_scheduler_with_optimizer=False because LeRobot "
+            "advances the scheduler only after successful optimizer updates"
+        )
+
+    return accelerator
+
+
 def update_policy(
     train_metrics: MetricsTracker,
     policy: PreTrainedPolicy,
@@ -114,10 +175,11 @@ def update_policy(
     sample_weighter=None,
 ) -> tuple[MetricsTracker, dict | None]:
     """
-    Performs a single training step to update the policy's weights.
+    Process one training microbatch and update the policy when accumulation synchronizes.
 
-    This function executes the forward and backward passes, clips gradients, and steps the optimizer and
-    learning rate scheduler. Accelerator handles mixed-precision training automatically.
+    Accelerator handles loss scaling, mixed precision, distributed gradient synchronization, and
+    suppression of intermediate optimizer/zero-grad calls. Gradient clipping, scheduler advancement,
+    and policy update hooks run only for a successful synchronized optimizer update.
 
     Args:
         train_metrics: A MetricsTracker instance to record training statistics.
@@ -141,65 +203,60 @@ def update_policy(
     if torch.cuda.is_available():
         torch.cuda.reset_peak_memory_stats()
 
-    # Compute sample weights if a weighter is provided
-    sample_weights = None
-    weight_stats = None
-    if sample_weighter is not None:
-        sample_weights, weight_stats = sample_weighter.compute_batch_weights(batch)
+    with accelerator.accumulate(policy):
+        sample_weights = None
+        weight_stats = None
+        if sample_weighter is not None:
+            sample_weights, weight_stats = sample_weighter.compute_batch_weights(batch)
 
-    # Let accelerator handle mixed precision
-    with accelerator.autocast():
-        if sample_weights is not None:
-            # Use per-sample loss for weighted training
-            # Note: Policies supporting sample weighting must implement forward(batch, reduction="none")
-            per_sample_loss, output_dict = policy.forward(batch, reduction="none")
+        with accelerator.autocast():
+            if sample_weights is not None:
+                # Policies supporting sample weighting must implement forward(batch, reduction="none").
+                per_sample_loss, output_dict = policy.forward(batch, reduction="none")
+                epsilon = 1e-6
+                loss = (per_sample_loss * sample_weights).sum() / (sample_weights.sum() + epsilon)
 
-            # Weighted loss: each sample's contribution is scaled by its weight.
-            # We divide by weight sum (not batch size) so that if some weights are zero,
-            # the remaining samples contribute proportionally more, preserving gradient scale.
-            # Weights are pre-normalized to sum to batch_size for stable training dynamics.
-            epsilon = 1e-6
-            loss = (per_sample_loss * sample_weights).sum() / (sample_weights.sum() + epsilon)
+                if output_dict is None:
+                    output_dict = {}
+                for key, value in weight_stats.items():
+                    output_dict[f"sample_weight_{key}"] = value
+            else:
+                loss, output_dict = policy.forward(batch)
 
-            # Log weighting statistics
-            if output_dict is None:
-                output_dict = {}
-            for key, value in weight_stats.items():
-                output_dict[f"sample_weight_{key}"] = value
-        else:
-            loss, output_dict = policy.forward(batch)
+            # TODO(rcadene): policy.unnormalize_outputs(out_dict)
 
-        # TODO(rcadene): policy.unnormalize_outputs(out_dict)
+        accelerator.backward(loss)
 
-    # Use accelerator's backward method
-    accelerator.backward(loss)
+        grad_norm = None
+        if accelerator.sync_gradients:
+            if grad_clip_norm > 0:
+                grad_norm = accelerator.clip_grad_norm_(policy.parameters(), grad_clip_norm)
+            else:
+                grad_norm = torch.nn.utils.clip_grad_norm_(
+                    policy.parameters(), float("inf"), error_if_nonfinite=False
+                )
 
-    # Clip gradients if specified
-    if grad_clip_norm > 0:
-        grad_norm = accelerator.clip_grad_norm_(policy.parameters(), grad_clip_norm)
-    else:
-        grad_norm = torch.nn.utils.clip_grad_norm_(
-            policy.parameters(), float("inf"), error_if_nonfinite=False
-        )
+        # AcceleratedOptimizer suppresses these calls until sync_gradients=True. Calling them on
+        # every microbatch keeps the standard Accelerate contract and clears gradients after sync.
+        step_lock = lock if lock is not None and accelerator.sync_gradients else nullcontext()
+        with step_lock:
+            optimizer.step()
+        optimizer.zero_grad()
 
-    # Optimizer step
-    with lock if lock is not None else nullcontext():
-        optimizer.step()
+        optimizer_step_succeeded = accelerator.sync_gradients and not accelerator.optimizer_step_was_skipped
+        if optimizer_step_succeeded:
+            if lr_scheduler is not None:
+                lr_scheduler.step()
 
-    optimizer.zero_grad()
-
-    # Step through pytorch scheduler at every batch instead of epoch
-    if lr_scheduler is not None:
-        lr_scheduler.step()
-
-    # Update internal buffers if policy has update method
-    if has_method(accelerator.unwrap_model(policy, keep_fp32_wrapper=True), "update"):
-        accelerator.unwrap_model(policy, keep_fp32_wrapper=True).update()
+            unwrapped_policy = accelerator.unwrap_model(policy, keep_fp32_wrapper=True)
+            if has_method(unwrapped_policy, "update"):
+                unwrapped_policy.update()
 
     train_metrics.loss = loss.item()
-    train_metrics.grad_norm = grad_norm.item()
-    train_metrics.lr = optimizer.param_groups[0]["lr"]
     train_metrics.update_s = time.perf_counter() - start_time
+    if optimizer_step_succeeded:
+        train_metrics.grad_norm = grad_norm.item()
+        train_metrics.lr = optimizer.param_groups[0]["lr"]
     if torch.cuda.is_available():
         train_metrics.gpu_mem_gb = torch.cuda.max_memory_allocated() / (1024**3)
     # Aggregate the policy's scalar outputs for logging and rank-reduction across the log window.
@@ -229,37 +286,10 @@ def train(cfg: TrainPipelineConfig, accelerator: "Accelerator | None" = None):
         return submit_to_hf(cfg)
 
     require_package("accelerate", extra="training")
-    from accelerate import Accelerator
-    from accelerate.utils import DistributedDataParallelKwargs, DistributedType
+    from accelerate.utils import DistributedType
 
     cfg.validate()
-
-    # Create Accelerator if not provided
-    # It will automatically detect if running in distributed mode or single-process mode
-    # We set step_scheduler_with_optimizer=False to prevent accelerate from adjusting the lr_scheduler steps based on the num_processes
-    # We set find_unused_parameters=True to handle models with conditional computation
-    if accelerator is None:
-        ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
-        # Accelerate auto-detects the device based on the available hardware and ignores the policy.device setting.
-        # Force the device to be CPU when the active config's device is set to CPU (works for both policy and reward model training).
-        force_cpu = cfg.trainable_config.device == "cpu"
-        # Drive Accelerate's autocast from policy.dtype (bf16/fp16 activate it; float32 -> full precision).
-        has_policy_dtype = hasattr(cfg.trainable_config, "dtype")
-        policy_dtype = getattr(cfg.trainable_config, "dtype", None)
-        mixed_precision = {"bfloat16": "bf16", "float16": "fp16", "float32": "no"}.get(policy_dtype)
-        # Policies without a `dtype` field fall back to `use_amp`, which would otherwise be
-        # silently ignored here while lerobot-eval honors it. Follow torch.autocast's default
-        # for the configured device so training and evaluation use the same precision.
-        if not has_policy_dtype and getattr(cfg.trainable_config, "use_amp", False):
-            device_type = torch.device(cfg.trainable_config.device).type
-            autocast_dtype = torch.get_autocast_dtype(device_type)
-            mixed_precision = {torch.bfloat16: "bf16", torch.float16: "fp16"}[autocast_dtype]
-        accelerator = Accelerator(
-            step_scheduler_with_optimizer=False,
-            mixed_precision=mixed_precision,
-            kwargs_handlers=[ddp_kwargs],
-            cpu=force_cpu,
-        )
+    accelerator = _resolve_accelerator(cfg, accelerator)
 
     init_logging(accelerator=accelerator)
 
@@ -417,7 +447,8 @@ def train(cfg: TrainPipelineConfig, accelerator: "Accelerator | None" = None):
             dataset_repo_id=cfg.dataset.repo_id,
         )
 
-    step = 0  # number of policy updates (forward + backward + optim)
+    step = 0  # number of successful optimizer updates
+    consumed_microbatches = 0
 
     if cfg.resume:
         # Under FSDP the optimizer state is sharded and must be loaded after `accelerator.prepare()`
@@ -426,6 +457,7 @@ def train(cfg: TrainPipelineConfig, accelerator: "Accelerator | None" = None):
         step, optimizer, lr_scheduler = load_training_state(
             cfg.checkpoint_path, optimizer, lr_scheduler, load_optimizer=not is_fsdp
         )
+        consumed_microbatches = load_training_consumed_microbatches(cfg.checkpoint_path)
 
     num_learnable_params = sum(p.numel() for p in policy.parameters() if p.requires_grad)
     num_total_params = sum(p.numel() for p in policy.parameters())
@@ -442,8 +474,11 @@ def train(cfg: TrainPipelineConfig, accelerator: "Accelerator | None" = None):
         logging.info(f"{dataset.num_frames=} ({format_big_number(dataset.num_frames)})")
         logging.info(f"{dataset.num_episodes=}")
         num_processes = accelerator.num_processes
-        effective_bs = cfg.batch_size * num_processes
-        logging.info(f"Effective batch size: {cfg.batch_size} x {num_processes} = {effective_bs}")
+        effective_bs = cfg.batch_size * num_processes * cfg.gradient_accumulation_steps
+        logging.info(
+            "Effective batch size: "
+            f"{cfg.batch_size} x {num_processes} x {cfg.gradient_accumulation_steps} = {effective_bs}"
+        )
         logging.info(f"{num_learnable_params=} ({format_big_number(num_learnable_params)})")
         logging.info(f"{num_total_params=} ({format_big_number(num_total_params)})")
 
@@ -469,6 +504,7 @@ def train(cfg: TrainPipelineConfig, accelerator: "Accelerator | None" = None):
             # ckpts that did not store them).
             saved_num_processes = load_training_num_processes(cfg.checkpoint_path)
             saved_batch_size = load_training_batch_size(cfg.checkpoint_path)
+            saved_gradient_accumulation_steps = load_training_gradient_accumulation_steps(cfg.checkpoint_path)
             ckpt_num_processes = saved_num_processes or accelerator.num_processes
             ckpt_batch_size = saved_batch_size or cfg.batch_size
             if is_main_process and saved_num_processes not in (None, accelerator.num_processes):
@@ -483,7 +519,21 @@ def train(cfg: TrainPipelineConfig, accelerator: "Accelerator | None" = None):
                     f"batch_size={saved_batch_size}. The data order resumes at the right epoch/offset, "
                     "but per-rank sample-exactness requires the same batch size."
                 )
-            sampler_state = compute_sampler_state(step, len(sampler), ckpt_batch_size, ckpt_num_processes)
+            if is_main_process and saved_gradient_accumulation_steps != cfg.gradient_accumulation_steps:
+                logging.warning(
+                    f"Resuming with gradient_accumulation_steps={cfg.gradient_accumulation_steps} "
+                    "but the checkpoint was written with "
+                    f"gradient_accumulation_steps={saved_gradient_accumulation_steps}. The saved "
+                    "data position uses the checkpoint value; future optimizer steps use the new value."
+                )
+            sampler_state = compute_sampler_state(
+                step,
+                len(sampler),
+                ckpt_batch_size,
+                ckpt_num_processes,
+                gradient_accumulation_steps=saved_gradient_accumulation_steps,
+                consumed_microbatches=consumed_microbatches,
+            )
             sampler.load_state_dict(sampler_state)
             if is_main_process:
                 logging.info(
@@ -574,10 +624,12 @@ def train(cfg: TrainPipelineConfig, accelerator: "Accelerator | None" = None):
         # max() because headroom is gated by the worst-case rank.
         train_metrics["gpu_mem_gb"] = AverageMeter("mem_gb", ":.2f", reduction="max")
 
-    # Keep global batch size for logging; MetricsTracker handles world size internally.
-    effective_batch_size = cfg.batch_size * accelerator.num_processes
+    # MetricsTracker handles world size internally, so give it the accumulated per-process batch.
+    accumulated_batch_size = cfg.batch_size * cfg.gradient_accumulation_steps
+    effective_batch_size = accumulated_batch_size * accelerator.num_processes
+    microbatch_global_size = cfg.batch_size * accelerator.num_processes
     train_tracker = MetricsTracker(
-        cfg.batch_size,
+        accumulated_batch_size,
         dataset.num_frames,
         dataset.num_episodes,
         train_metrics,
@@ -598,7 +650,7 @@ def train(cfg: TrainPipelineConfig, accelerator: "Accelerator | None" = None):
             f"Start offline training on a fixed dataset, with effective batch size: {effective_batch_size}"
         )
 
-    for _ in range(step, cfg.steps):
+    while step < cfg.steps:
         start_time = time.perf_counter()
         batch = next(dl_iter)
         for cam_key in dataset.meta.camera_keys:
@@ -617,9 +669,16 @@ def train(cfg: TrainPipelineConfig, accelerator: "Accelerator | None" = None):
             lr_scheduler=lr_scheduler,
             sample_weighter=sample_weighter,
         )
+        consumed_microbatches += 1
 
-        # Note: eval and checkpoint happens *after* the `step`th training update has completed, so we
-        # increment `step` here.
+        # Intermediate microbatches do not advance public training steps or any step-based schedule.
+        # AMP overflow also leaves the optimizer step unchanged, so retry with a fresh accumulation
+        # window instead of advancing the scheduler/checkpoint/evaluation state.
+        optimizer_step_succeeded = accelerator.sync_gradients and not accelerator.optimizer_step_was_skipped
+        if not optimizer_step_succeeded:
+            continue
+
+        # Eval and checkpoint happen after the successful optimizer update has completed.
         step += 1
         if is_main_process:
             progbar.update(1)
@@ -633,11 +692,11 @@ def train(cfg: TrainPipelineConfig, accelerator: "Accelerator | None" = None):
             # Collective reduce must run on every rank, before the main-process gate below.
             train_tracker.reduce_across_ranks()
             if is_main_process:
-                # Cluster-wide throughput, derived from the already-reduced (max) step time so it
-                # reflects the slowest rank — which is what actually gates the next iteration.
+                # Timings are averaged per microbatch, so use the physical global microbatch size.
+                # Multiplying by the accumulated effective batch would over-report throughput by k.
                 step_time = train_tracker.update_s.avg + train_tracker.dataloading_s.avg
                 if step_time > 0:
-                    train_tracker.samples_per_s = effective_batch_size / step_time
+                    train_tracker.samples_per_s = microbatch_global_size / step_time
                 logging.info(train_tracker)
                 if wandb_logger:
                     # Policy sub-losses (latent_loss, action_loss, ...) are aggregated into the
@@ -697,6 +756,7 @@ def train(cfg: TrainPipelineConfig, accelerator: "Accelerator | None" = None):
                     postprocessor=postprocessor,
                     num_processes=accelerator.num_processes,
                     batch_size=cfg.batch_size,
+                    consumed_microbatches=consumed_microbatches,
                     model_state_dict=model_state_dict,
                     optim_state_dict=optim_state_dict,
                 )

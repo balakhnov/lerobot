@@ -234,3 +234,45 @@ def test_compute_sampler_state():
         "epoch": 1,
         "start_index": 100,
     }
+
+
+def test_compute_sampler_state_counts_consumed_microbatches_with_gradient_accumulation():
+    # 10 frames / batch size 2 = 5 microbatches per epoch. Three optimizer
+    # steps at accumulation=2 consume 6 microbatches: one full epoch plus one
+    # microbatch, so the resumed sampler must skip two frames in epoch 1.
+    state = compute_sampler_state(
+        step=3,
+        num_frames=10,
+        batch_size=2,
+        num_processes=1,
+        gradient_accumulation_steps=2,
+    )
+
+    assert state == {"epoch": 1, "start_index": 2}
+
+
+def test_compute_sampler_state_accumulation_with_multiple_processes():
+    # Each process sees 5 microbatches per epoch. Six consumed microbatches
+    # leave one microbatch in epoch 1, equal to 2 * 2 globally consumed frames.
+    state = compute_sampler_state(
+        step=3,
+        num_frames=20,
+        batch_size=2,
+        num_processes=2,
+        gradient_accumulation_steps=2,
+    )
+
+    assert state == {"epoch": 1, "start_index": 4}
+
+
+def test_compute_sampler_state_uses_explicit_consumed_microbatches_after_skipped_update():
+    state = compute_sampler_state(
+        step=3,
+        num_frames=10,
+        batch_size=2,
+        num_processes=1,
+        gradient_accumulation_steps=2,
+        consumed_microbatches=8,
+    )
+
+    assert state == {"epoch": 1, "start_index": 6}

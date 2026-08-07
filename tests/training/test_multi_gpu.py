@@ -189,6 +189,39 @@ class TestMultiGPUTraining:
             # Verify that training completed
             assert "End of training" in result.stdout or "End of training" in result.stderr
 
+    def test_gradient_accumulation_multi_gpu_training(self):
+        """DDP accumulation completes and reports the effective global batch size."""
+        download_dataset("lerobot/pusht", episodes=[0])
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_dir = Path(temp_dir) / "outputs"
+            config_args = [
+                "--dataset.repo_id=lerobot/pusht",
+                "--dataset.episodes=[0]",
+                "--policy.type=act",
+                "--policy.device=cuda",
+                "--policy.push_to_hub=false",
+                f"--output_dir={output_dir}",
+                "--batch_size=2",
+                "--gradient_accumulation_steps=2",
+                "--steps=4",
+                "--env_eval_freq=-1",
+                "--log_freq=1",
+                "--save_freq=4",
+                "--seed=42",
+                "--num_workers=0",
+            ]
+
+            result = run_accelerate_training(config_args, num_processes=2, temp_dir=temp_dir)
+
+            assert result.returncode == 0, (
+                f"DDP gradient accumulation failed:\nSTDOUT:\n{result.stdout}\n\nSTDERR:\n{result.stderr}"
+            )
+            combined_output = (result.stdout + result.stderr).lower()
+            assert "effective batch size: 8" in combined_output
+            assert "step:1 smpl:8" in combined_output
+            assert "end of training" in combined_output
+
     def test_checkpoint_saving_multi_gpu(self):
         """
         Test that checkpoints are correctly saved during multi-GPU training.

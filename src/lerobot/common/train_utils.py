@@ -64,17 +64,24 @@ def should_save_checkpoint(step: int, save_freq: int, total_steps: int) -> bool:
 
 
 def save_training_step(
-    step: int, save_dir: Path, num_processes: int | None = None, batch_size: int | None = None
+    step: int,
+    save_dir: Path,
+    num_processes: int | None = None,
+    batch_size: int | None = None,
+    gradient_accumulation_steps: int | None = None,
+    consumed_microbatches: int | None = None,
 ) -> None:
     state: dict = {"step": step}
-    # num_processes and batch_size are recorded so a resumed run can detect a changed world size or
-    # batch size: the sampler's resume offset is computed from the (num_processes, batch_size) that
-    # produced `step`, since both scale how many sampler positions a step consumes (see
-    # compute_sampler_state).
+    # These values let resume reconstruct the exact sampler position. The explicit microbatch
+    # counter also covers AMP-overflow windows that consumed data without advancing `step`.
     if num_processes is not None:
         state["num_processes"] = num_processes
     if batch_size is not None:
         state["batch_size"] = batch_size
+    if gradient_accumulation_steps is not None:
+        state["gradient_accumulation_steps"] = gradient_accumulation_steps
+    if consumed_microbatches is not None:
+        state["consumed_microbatches"] = consumed_microbatches
     write_json(state, save_dir / TRAINING_STEP)
 
 
@@ -91,6 +98,22 @@ def load_training_num_processes(checkpoint_dir: Path) -> int | None:
 def load_training_batch_size(checkpoint_dir: Path) -> int | None:
     """Per-process batch size recorded at checkpoint time, or None for older checkpoints."""
     return load_json(checkpoint_dir / TRAINING_STATE_DIR / TRAINING_STEP).get("batch_size")
+
+
+def load_training_gradient_accumulation_steps(checkpoint_dir: Path) -> int:
+    """Checkpoint-time accumulation count, defaulting to one for older checkpoints."""
+    return load_json(checkpoint_dir / TRAINING_STATE_DIR / TRAINING_STEP).get(
+        "gradient_accumulation_steps", 1
+    )
+
+
+def load_training_consumed_microbatches(checkpoint_dir: Path) -> int:
+    """Consumed microbatches, derived for checkpoints written before the counter was stored."""
+    state = load_json(checkpoint_dir / TRAINING_STATE_DIR / TRAINING_STEP)
+    return state.get(
+        "consumed_microbatches",
+        state["step"] * state.get("gradient_accumulation_steps", 1),
+    )
 
 
 def update_last_checkpoint(checkpoint_dir: Path) -> Path:
@@ -112,6 +135,7 @@ def save_checkpoint(
     postprocessor: PolicyProcessorPipeline | None = None,
     num_processes: int | None = None,
     batch_size: int | None = None,
+    consumed_microbatches: int | None = None,
     model_state_dict: dict | None = None,
     optim_state_dict: dict | None = None,
 ) -> None:
@@ -143,6 +167,8 @@ def save_checkpoint(
             resume. Defaults to None (not recorded).
         batch_size (int | None, optional): Per-process batch size to record for sample-exact
             resume. Defaults to None (not recorded).
+        consumed_microbatches (int | None, optional): Exact number of training microbatches
+            consumed at this checkpoint. Defaults to None (derived from step for older callers).
         model_state_dict: Pre-gathered full (unsharded) model state dict. Required under FSDP,
             where `policy.state_dict()` would return sharded tensors; the caller gathers it via a
             cross-rank collective and passes it here so rank 0 can write it directly. It holds
@@ -171,6 +197,8 @@ def save_checkpoint(
         scheduler,
         num_processes=num_processes,
         batch_size=batch_size,
+        gradient_accumulation_steps=cfg.gradient_accumulation_steps,
+        consumed_microbatches=consumed_microbatches,
         optim_state_dict=optim_state_dict,
     )
 
@@ -182,6 +210,8 @@ def save_training_state(
     scheduler: LRScheduler | None = None,
     num_processes: int | None = None,
     batch_size: int | None = None,
+    gradient_accumulation_steps: int | None = None,
+    consumed_microbatches: int | None = None,
     optim_state_dict: dict | None = None,
 ) -> None:
     """
@@ -196,12 +226,23 @@ def save_training_state(
             Defaults to None.
         num_processes (int | None, optional): Distributed world size to record. Defaults to None.
         batch_size (int | None, optional): Per-process batch size to record. Defaults to None.
+        gradient_accumulation_steps (int | None, optional): Number of microbatches per optimizer
+            update to record for sample-exact resume. Defaults to None.
+        consumed_microbatches (int | None, optional): Exact number of microbatches consumed,
+            including windows whose optimizer update was skipped. Defaults to None.
         optim_state_dict: Pre-gathered full optimizer state dict (for FSDP). Saved instead of
             `optimizer.state_dict()` when provided. Defaults to None.
     """
     save_dir = checkpoint_dir / TRAINING_STATE_DIR
     save_dir.mkdir(parents=True, exist_ok=True)
-    save_training_step(train_step, save_dir, num_processes=num_processes, batch_size=batch_size)
+    save_training_step(
+        train_step,
+        save_dir,
+        num_processes=num_processes,
+        batch_size=batch_size,
+        gradient_accumulation_steps=gradient_accumulation_steps,
+        consumed_microbatches=consumed_microbatches,
+    )
     save_rng_state(save_dir)
     if optimizer is not None:
         save_optimizer_state(optimizer, save_dir, optim_state_dict=optim_state_dict)

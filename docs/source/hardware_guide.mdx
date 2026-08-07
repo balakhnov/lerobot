@@ -17,7 +17,10 @@ Policies cluster by backbone size; the groupings below give a single VRAM envelo
 | Multimodal | `groot`, `eo1`                              |                ~24–40GB | A100 40 GB+                       |
 | RL         | `sac`                                       |             config-dep. | See [HIL-SERL guide](./hilserl)   |
 
-Memory-bound? Drop the batch size (~linear), use gradient accumulation to recover effective batch, or for SmolVLA leave `freeze_vision_encoder=True`.
+Memory-bound? Drop the microbatch size (~linear) and use
+`--gradient_accumulation_steps=N` to recover the effective batch, or for SmolVLA leave
+`freeze_vision_encoder=True`. The effective global batch is
+`batch_size × num_gpus × gradient_accumulation_steps`.
 
 ## Training time
 
@@ -25,10 +28,14 @@ Robotics imitation learning typically converges in **5–10 epochs over the data
 
 ```text
 total_frames    = sum of frames over all episodes      # 50 ep × 30 fps × 30 s ≈ 45,000
-steps_per_epoch = ceil(total_frames / (num_gpus × batch_size))
+steps_per_epoch = ceil(total_frames / (num_gpus × batch_size × gradient_accumulation_steps))
 total_steps     = epochs × steps_per_epoch
 wall_clock      ≈ total_steps × per_step_time
 ```
+
+Here, a training `step` is a successful optimizer update. For example, a single GPU with
+`--batch_size=2 --gradient_accumulation_steps=4` has an effective batch size of 8 while retaining
+the approximate activation-memory footprint of batch size 2.
 
 Per-step time depends on the policy and the GPU. The numbers in the table below are anchors — pick the row closest to your setup and scale linearly with `total_steps` if you train longer or shorter.
 

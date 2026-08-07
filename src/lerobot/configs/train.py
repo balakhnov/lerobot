@@ -100,6 +100,8 @@ class TrainPipelineConfig(HubMixin):
     # Number of workers for the dataloader.
     num_workers: int = 4
     batch_size: int = 8
+    # Number of microbatches whose gradients are accumulated for one optimizer update.
+    gradient_accumulation_steps: int = 1
     prefetch_factor: int = 4
     persistent_workers: bool = True
     # DataLoader worker start method. "spawn" is safer than "fork" with
@@ -224,6 +226,13 @@ class TrainPipelineConfig(HubMixin):
             self.reward_model.pretrained_path = str(policy_dir)
 
     def validate(self) -> None:
+        if (
+            isinstance(self.gradient_accumulation_steps, bool)
+            or not isinstance(self.gradient_accumulation_steps, int)
+            or self.gradient_accumulation_steps < 1
+        ):
+            raise ValueError("gradient_accumulation_steps must be a positive integer")
+
         available_contexts = multiprocessing.get_all_start_methods()
         if (
             self.dataloader_multiprocessing_context is not None

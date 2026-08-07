@@ -19,6 +19,7 @@ from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
+import lerobot.common.train_utils as train_utils
 from lerobot.common.train_utils import (
     get_step_checkpoint_dir,
     get_step_identifier,
@@ -103,6 +104,51 @@ def test_load_training_batch_size_absent_returns_none(tmp_path, optimizer, sched
     assert load_training_batch_size(tmp_path) is None
 
 
+def test_save_and_load_training_gradient_accumulation_steps(tmp_path, optimizer, scheduler):
+    save_training_state(
+        tmp_path,
+        10,
+        optimizer,
+        scheduler,
+        gradient_accumulation_steps=4,
+    )
+
+    load_gradient_accumulation_steps = train_utils.load_training_gradient_accumulation_steps
+    assert load_gradient_accumulation_steps(tmp_path) == 4
+
+
+def test_old_training_state_defaults_to_no_gradient_accumulation(tmp_path, optimizer, scheduler):
+    save_training_state(tmp_path, 10, optimizer, scheduler)
+
+    load_gradient_accumulation_steps = train_utils.load_training_gradient_accumulation_steps
+    assert load_gradient_accumulation_steps(tmp_path) == 1
+
+
+def test_training_state_records_consumed_microbatches(tmp_path, optimizer, scheduler):
+    save_training_state(
+        tmp_path,
+        3,
+        optimizer,
+        scheduler,
+        gradient_accumulation_steps=2,
+        consumed_microbatches=8,
+    )
+
+    assert train_utils.load_training_consumed_microbatches(tmp_path) == 8
+
+
+def test_old_training_state_derives_consumed_microbatches(tmp_path, optimizer, scheduler):
+    save_training_state(
+        tmp_path,
+        3,
+        optimizer,
+        scheduler,
+        gradient_accumulation_steps=2,
+    )
+
+    assert train_utils.load_training_consumed_microbatches(tmp_path) == 6
+
+
 def test_update_last_checkpoint(tmp_path):
     checkpoint = tmp_path / "0005"
     checkpoint.mkdir()
@@ -120,6 +166,19 @@ def test_save_checkpoint(mock_save_training_state, tmp_path, optimizer):
     policy.save_pretrained.assert_called_once()
     cfg.save_pretrained.assert_called_once()
     mock_save_training_state.assert_called_once()
+
+
+@patch("lerobot.common.train_utils.save_training_state")
+def test_save_checkpoint_propagates_gradient_accumulation_steps(
+    mock_save_training_state, tmp_path, optimizer
+):
+    policy = Mock()
+    cfg = Mock(peft=None, gradient_accumulation_steps=4)
+
+    save_checkpoint(tmp_path, 10, cfg, policy, optimizer, consumed_microbatches=9)
+
+    assert mock_save_training_state.call_args.kwargs["gradient_accumulation_steps"] == 4
+    assert mock_save_training_state.call_args.kwargs["consumed_microbatches"] == 9
 
 
 @patch("lerobot.common.train_utils.save_training_state")
