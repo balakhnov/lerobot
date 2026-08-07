@@ -20,7 +20,7 @@ policy:
   dtype: bfloat16
   device: cuda
   push_to_hub: false
-  num_flow_samples: 4
+  num_flow_samples: 8
   use_fast_auxiliary: false
   fast_loss_weight: 0.05
   max_action_tokens: 256
@@ -29,8 +29,9 @@ output_dir: outputs/pi05_libero/flow_k4_seed1000
 job_name: pi05_libero_flow_k4_seed1000
 seed: 1000
 cudnn_deterministic: true
-# Per-device batch size. K=4 uses more action-expert memory than K=1.
-batch_size: 4
+# Per-device microbatch size. K=4 uses more action-expert memory than K=1.
+batch_size: 8
+gradient_accumulation_steps: 4
 num_workers: 8
 steps: 6000
 log_freq: 50

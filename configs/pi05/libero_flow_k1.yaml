@@ -29,8 +29,9 @@ output_dir: outputs/pi05_libero/flow_k1_seed1000
 job_name: pi05_libero_flow_k1_seed1000
 seed: 1000
 cudnn_deterministic: true
-# Per-device batch size. Override this after the GPU memory smoke test.
-batch_size: 4
+# Per-device microbatch size. Override this after the GPU memory smoke test.
+batch_size: 8
+gradient_accumulation_steps: 4
 num_workers: 8
 steps: 6000
 log_freq: 50

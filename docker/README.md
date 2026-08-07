@@ -33,6 +33,10 @@ A lightweight image based on `python:3.12-slim`. Includes all Python dependencie
 
 A CUDA-enabled image based on `nvidia/cuda`. This is the image for training — mostly used for internal interactions with the GPU cluster.
 
+### `Dockerfile.nebius` (GPU cloud training)
+
+A CUDA-enabled image for interactive training on Nebius Container VMs. See [NEBIUS.md](./NEBIUS.md) for the complete build, push, deployment, storage, and GPU configuration workflow.
+
 ## Usage
 
 ### Running a pre-built image
