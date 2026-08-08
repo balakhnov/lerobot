@@ -28,6 +28,7 @@ ARG PYTHON_VERSION=3.12
 # Configure environment variables
 ENV DEBIAN_FRONTEND=noninteractive \
     MUJOCO_GL=egl \
+    NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics \
     PATH=/lerobot/.venv/bin:$PATH \
     DEVICE=cuda
 

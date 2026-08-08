@@ -25,8 +25,8 @@ policy:
   fast_loss_weight: 0.05
   max_action_tokens: 256
 
-output_dir: outputs/pi05_libero/flow_k4_seed1000
-job_name: pi05_libero_flow_k4_seed1000
+output_dir: outputs/pi05_libero/flow_k8_seed1000
+job_name: pi05_libero_flow_k8_seed1000
 seed: 1000
 cudnn_deterministic: true
 # Per-device microbatch size. K=4 uses more action-expert memory than K=1.

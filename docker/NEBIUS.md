@@ -127,7 +127,7 @@ In the Nebius console:
 Use these Docker run arguments for either GPU count:
 
 ```text
---restart=always --gpus all --shm-size=16GB
+--restart=always --gpus all --shm-size=16GB -e NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics
 ```
 
 With this configuration:
@@ -152,7 +152,7 @@ Container files can be lost when the container or VM is replaced. For a simple
 setup, add Docker named volumes to the run arguments:
 
 ```text
---restart=always --gpus all --shm-size=16GB -v lerobot-hf-cache:/home/user_lerobot/.cache/huggingface -v lerobot-outputs:/lerobot/outputs
+--restart=always --gpus all --shm-size=16GB -e NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics -v lerobot-hf-cache:/home/user_lerobot/.cache/huggingface -v lerobot-outputs:/lerobot/outputs
 ```
 
 Named volumes survive container restarts but remain on that VM's disk. For
@@ -241,6 +241,23 @@ the Docker run arguments:
 echo "${CUDA_VISIBLE_DEVICES}"
 python -c 'import torch; print(torch.cuda.device_count())'
 ```
+
+### LIBERO fails to initialize EGL
+
+LIBERO's headless MuJoCo renderer requires the NVIDIA OpenGL/EGL driver
+libraries in addition to CUDA. If evaluation reports `failed to create dri2
+screen` or `Cannot initialize a EGL device display`, recreate the container
+with:
+
+```text
+-e NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics
+```
+
+Setting this variable later inside `docker exec` is too late: the NVIDIA
+container runtime decides which host driver libraries to mount when it creates
+the container. Images built from `docker/Dockerfile.nebius` include this value
+by default, but keeping it explicit in the Container VM run arguments also
+makes the requirement visible in the deployment configuration.
 
 ### The VM reports an image architecture error
 
