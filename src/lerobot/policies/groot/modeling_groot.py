@@ -115,6 +115,16 @@ class GrootPolicy(PreTrainedPolicy):
             _tie_unused_qwen_lm_head(qwen_model)
         if self.config.model_params_fp32:
             self._cast_model_parameters_to_fp32(model)
+
+        if self.config.compile_model:
+            torch.set_float32_matmul_precision("high")
+            model.action_head.get_action_with_features = torch.compile(
+                model.action_head.get_action_with_features,
+                mode=self.config.compile_mode,
+                backend=self.config.compile_backend,
+                fullgraph=self.config.compile_fullgraph,
+            )
+
         return model
 
     @staticmethod

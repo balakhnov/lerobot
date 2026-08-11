@@ -344,7 +344,11 @@ class GrootConfig(PreTrainedConfig):
     warmup_ratio: float = 0.05
     use_bf16: bool = True
     # The native N1.7 fine-tuning recipe keeps model parameters in FP32 and computes under BF16 autocast.
-    model_params_fp32: bool = True
+    model_params_fp32: bool = False
+    compile_model: bool = False  # Whether to use torch.compile for model optimization
+    compile_mode: str = "max-autotune"  # Torch compile mode
+    compile_backend: str = "inductor"
+    compile_fullgraph: bool = True
 
     # TODO(Steven): Remove these deprecated fields in a future release.
     # Deprecated Isaac-GR00T runner / GR00T N1.5 fields, plus the (never-wired) LoRA fields — all
