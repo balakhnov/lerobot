@@ -114,12 +114,23 @@ def test_n1_7_backbone_accepts_transformers_5_layout_and_forwards_mm_token_type_
         def __init__(self):
             super().__init__()
             self.layers = nn.ModuleList([nn.Linear(1, 1) for _ in range(2)])
+            self.norm = nn.LayerNorm(1)
 
     class FakeInnerModel(nn.Module):
         def __init__(self):
             super().__init__()
             self.language_model = FakeLanguageModel()
             self.visual = nn.Linear(1, 1)
+            self.forward_kwargs = None
+
+        def forward(self, **kwargs):
+            self.forward_kwargs = kwargs
+            assert "mm_token_type_ids" in kwargs
+            batch_size, sequence_length = kwargs["input_ids"].shape
+            features = torch.arange(batch_size * sequence_length * 4, dtype=torch.float32).view(
+                batch_size, sequence_length, 4
+            )
+            return SimpleNamespace(last_hidden_state=features)
 
     class FakeQwen3VLForConditionalGeneration(nn.Module):
         config = SimpleNamespace(image_token_id=42, video_token_id=43)
@@ -127,7 +138,6 @@ def test_n1_7_backbone_accepts_transformers_5_layout_and_forwards_mm_token_type_
         def __init__(self):
             super().__init__()
             self.model = FakeInnerModel()
-            self.forward_kwargs = None
 
         @classmethod
         def from_pretrained(cls, *args, **kwargs):
@@ -142,20 +152,8 @@ def test_n1_7_backbone_accepts_transformers_5_layout_and_forwards_mm_token_type_
             return self
 
         def forward(self, **kwargs):
-            self.forward_kwargs = kwargs
-            assert "mm_token_type_ids" in kwargs
-            batch_size, sequence_length = kwargs["input_ids"].shape
-            features = torch.arange(batch_size * sequence_length * 4, dtype=torch.float32).view(
-                batch_size, sequence_length, 4
-            )
-            return SimpleNamespace(hidden_states=[features])
+            raise AssertionError("GR00T should bypass the unused causal-LM head")
 
-    monkeypatch.setattr(
-        groot_n1_7,
-        "metadata",
-        SimpleNamespace(version=lambda package: "5.3.0" if package == "transformers" else "0"),
-        raising=False,
-    )
     monkeypatch.setattr(groot_n1_7, "Qwen3VLForConditionalGeneration", FakeQwen3VLForConditionalGeneration)
 
     backbone = groot_n1_7.Qwen3Backbone(
@@ -177,7 +175,7 @@ def test_n1_7_backbone_accepts_transformers_5_layout_and_forwards_mm_token_type_
         )
     )
 
-    assert backbone.model.forward_kwargs["mm_token_type_ids"].tolist() == [[0, 1, 0]]
+    assert backbone.model.model.forward_kwargs["mm_token_type_ids"].tolist() == [[0, 1, 0]]
     assert output["backbone_features"].shape == (1, 3, 4)
 
     output = backbone.forward(
@@ -193,8 +191,8 @@ def test_n1_7_backbone_accepts_transformers_5_layout_and_forwards_mm_token_type_
         )
     )
 
-    assert backbone.model.forward_kwargs["mm_token_type_ids"].tolist() == [[0, 1, 2, 0]]
-    assert backbone.model.forward_kwargs["mm_token_type_ids"].dtype == torch.int32
+    assert backbone.model.model.forward_kwargs["mm_token_type_ids"].tolist() == [[0, 1, 2, 0]]
+    assert backbone.model.model.forward_kwargs["mm_token_type_ids"].dtype == torch.int32
     assert output["backbone_features"].shape == (1, 4, 4)
 
 
@@ -203,12 +201,6 @@ def test_n1_7_backbone_preserves_missing_qwen_optional_dependency_error(monkeypa
 
     import lerobot.policies.groot.groot_n1_7 as groot_n1_7
 
-    monkeypatch.setattr(
-        groot_n1_7,
-        "metadata",
-        SimpleNamespace(version=lambda package: "5.3.0" if package == "transformers" else "0"),
-        raising=False,
-    )
     monkeypatch.setattr(groot_n1_7, "Qwen3VLForConditionalGeneration", None)
 
     with pytest.raises(ImportError, match="Qwen3VLForConditionalGeneration is required"):
@@ -2611,6 +2603,47 @@ def test_groot_policy_selects_n1_7_model_class(monkeypatch):
     assert isinstance(policy._groot_model, _DummyGrootModel)
 
 
+def test_groot_policy_compiles_backbone_forward_when_enabled(monkeypatch):
+    pytest.importorskip("transformers")
+
+    from lerobot.policies.groot.groot_n1_7 import GR00TN17
+
+    class DummyBackbone(nn.Module):
+        def forward(self, inputs):
+            return inputs
+
+    dummy_model = _DummyGrootModel()
+    dummy_model.backbone = DummyBackbone()
+    monkeypatch.setattr(GR00TN17, "from_pretrained", classmethod(lambda cls, **kwargs: dummy_model))
+
+    compile_call = {}
+
+    def fake_compile(fn, **kwargs):
+        compile_call["fn"] = fn
+        compile_call.update(kwargs)
+
+        def compiled_forward(*args, **call_kwargs):
+            return fn(*args, **call_kwargs)
+
+        compile_call["compiled_forward"] = compiled_forward
+        return compiled_forward
+
+    monkeypatch.setattr(torch, "compile", fake_compile)
+    config = _groot_config()
+    config.compile_backbone = True
+    config.compile_backend = "eager"
+    config.compile_mode = "default"
+    config.compile_fullgraph = False
+
+    policy = GrootPolicy(config)
+
+    assert compile_call["fn"].__self__ is dummy_model.backbone
+    assert compile_call["backend"] == "eager"
+    assert compile_call["mode"] == "default"
+    assert compile_call["fullgraph"] is False
+    assert policy._groot_model.backbone.forward is compile_call["compiled_forward"]
+
+
 def test_groot_policy_forwards_n1_7_qwen_inputs(monkeypatch):
     pytest.importorskip("transformers")
 
@@ -2734,6 +2767,7 @@ def test_qwen3_backbone_uses_nested_transformers_model_contract(monkeypatch):
         def __init__(self):
             super().__init__()
             self.layers = nn.ModuleList([nn.Linear(1, 1) for _ in range(3)])
+            self.norm = nn.LayerNorm(1)
 
     class FakeVisual(nn.Module):
         def __init__(self):
@@ -2745,6 +2779,13 @@ def test_qwen3_backbone_uses_nested_transformers_model_contract(monkeypatch):
             super().__init__()
             self.language_model = FakeLanguageModel()
             self.visual = FakeVisual()
+
+        def forward(self, **kwargs):
+            batch_size, sequence_length = kwargs["input_ids"].shape
+            features = torch.arange(batch_size * sequence_length * 4, dtype=torch.float32).view(
+                batch_size, sequence_length, 4
+            )
+            return SimpleNamespace(last_hidden_state=features)
 
     class FakeQwenForConditionalGeneration(nn.Module):
         config = SimpleNamespace(image_token_id=42)
@@ -2762,11 +2803,7 @@ def test_qwen3_backbone_uses_nested_transformers_model_contract(monkeypatch):
             return self
 
         def forward(self, **kwargs):
-            batch_size, sequence_length = kwargs["input_ids"].shape
-            features = torch.arange(batch_size * sequence_length * 4, dtype=torch.float32).view(
-                batch_size, sequence_length, 4
-            )
-            return SimpleNamespace(hidden_states=[features, features + 1])
+            raise AssertionError("GR00T should bypass the unused causal-LM head")
 
     monkeypatch.setattr(
         groot_n1_7,
@@ -2783,6 +2820,8 @@ def test_qwen3_backbone_uses_nested_transformers_model_contract(monkeypatch):
 
     assert not hasattr(backbone.model, "language_model")
     assert len(backbone.language_model.layers) == 2
+    assert isinstance(backbone.language_model.norm, groot_n1_7._PassthroughFinalNorm)
+    assert "model.model.language_model.norm.weight" in backbone.state_dict()
     assert not any(parameter.requires_grad for parameter in backbone.language_model.parameters())
     assert not any(parameter.requires_grad for parameter in backbone.visual.parameters())
 
@@ -2817,6 +2856,7 @@ def test_qwen3_backbone_can_initialize_from_config_without_downloading_weights(m
         def __init__(self):
             super().__init__()
             self.layers = nn.ModuleList([nn.Linear(1, 1) for _ in range(3)])
+            self.norm = nn.LayerNorm(1)
 
     class FakeVisual(nn.Module):
         def __init__(self):

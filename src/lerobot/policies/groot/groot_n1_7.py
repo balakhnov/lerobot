@@ -244,6 +244,17 @@ class MultiEmbodimentActionEncoder(nn.Module):
         return self.W3(x, cat_ids)
 
 
+class _PassthroughFinalNorm(nn.Module):
+    """Preserve the Qwen final-norm state-dict key while returning pre-norm features."""
+
+    def __init__(self, norm: nn.Module):
+        super().__init__()
+        self.weight = norm.weight
+
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        return hidden_states
+
+
 class Qwen3Backbone(nn.Module):
     """Cosmos-Reason2/Qwen3-VL backbone used by GR00T N1.7.
 
@@ -304,6 +315,12 @@ class Qwen3Backbone(nn.Module):
         _tie_unused_qwen_lm_head(self.model)
         while len(self.language_model.layers) > select_layer:
             self.language_model.layers.pop(-1)
+        # GR00T consumes the last decoder layer output before Qwen's final RMSNorm. Transformers 5.5
+        # only exposes the post-norm tensor as ``last_hidden_state`` and implements
+        # ``output_hidden_states=True`` through capture hooks that are incompatible with torch.compile.
+        # Make the final norm a passthrough so the inner multimodal model returns the required tensor
+        # directly, while retaining ``language_model.norm.weight`` for checkpoint compatibility.
+        self.language_model.norm = _PassthroughFinalNorm(self.language_model.norm)
 
         self.select_layer = select_layer
         self.set_trainable_parameters(tune_llm, tune_visual, tune_top_llm_layers)
@@ -412,33 +429,6 @@ class Qwen3Backbone(nn.Module):
 
         model_input["position_ids"] = position_ids
 
-    def _last_decoder_layer_output(self, model_input: dict[str, torch.Tensor]) -> torch.Tensor:
-        """Return the pre-final-norm decoder output consumed by the N1.7 action head.
-
-        Older Transformers releases exposed this tensor as ``hidden_states[-1]``.
-        Newer releases expose the post-final-norm tensor there instead. Capturing
-        the last decoder layer output directly keeps the N1.7 action head input
-        stable across Transformers versions.
-        """
-
-        captured: dict[str, torch.Tensor] = {}
-
-        def capture_output(_module: nn.Module, _inputs: tuple[Any, ...], output: Any) -> None:
-            if isinstance(output, torch.Tensor):
-                captured["features"] = output
-            elif isinstance(output, (tuple, list)) and output:
-                captured["features"] = output[0]
-            elif hasattr(output, "last_hidden_state"):
-                captured["features"] = output.last_hidden_state
-
-        hook = self.language_model.layers[-1].register_forward_hook(capture_output)
-        try:
-            outputs = self.model(**model_input, output_hidden_states=True)
-        finally:
-            hook.remove()
-
-        return captured.get("features", outputs.hidden_states[-1])
-
     def forward(self, vl_input: BatchFeature) -> BatchFeature:
         self.set_frozen_modules_to_eval_mode()
         keys_to_use = ["input_ids", "attention_mask", "pixel_values", "image_grid_thw"]
@@ -447,7 +437,8 @@ class Qwen3Backbone(nn.Module):
         model_input.update({key: vl_input[key] for key in optional_keys if key in vl_input})
         self._ensure_mm_token_type_ids(model_input)
         self._ensure_legacy_qwen3_position_ids(model_input)
-        features = self._last_decoder_layer_output(model_input)
+        qwen3_model = getattr(self.model, "model", self.model)
+        features = qwen3_model(**model_input).last_hidden_state
         image_mask = model_input["input_ids"] == self.model.config.image_token_id
         attention_mask = model_input["attention_mask"] == 1
         return BatchFeature(

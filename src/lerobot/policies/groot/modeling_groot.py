@@ -116,8 +116,18 @@ class GrootPolicy(PreTrainedPolicy):
         if self.config.model_params_fp32:
             self._cast_model_parameters_to_fp32(model)
 
-        if self.config.compile_model:
+        if self.config.compile_model or self.config.compile_backbone:
             torch.set_float32_matmul_precision("high")
+
+        if self.config.compile_backbone:
+            model.backbone.forward = torch.compile(
+                model.backbone.forward,
+                mode=self.config.compile_mode,
+                backend=self.config.compile_backend,
+                fullgraph=self.config.compile_fullgraph,
+            )
+
+        if self.config.compile_model:
             model.action_head.get_action_with_features = torch.compile(
                 model.action_head.get_action_with_features,
                 mode=self.config.compile_mode,
