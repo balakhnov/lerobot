@@ -2603,12 +2603,26 @@ def test_groot_policy_selects_n1_7_model_class(monkeypatch):
     assert isinstance(policy._groot_model, _DummyGrootModel)
 
 
-def test_groot_policy_compiles_backbone_forward_when_enabled(monkeypatch):
+def test_groot_policy_compiles_backbone_prefill_when_enabled(monkeypatch):
     pytest.importorskip("transformers")
 
-    from lerobot.policies.groot.groot_n1_7 import GR00TN17
+    from lerobot.policies.groot.groot_n1_7 import GR00TN17, Qwen3Backbone
+
+    class DummyLanguageModel(nn.Module):
+        def forward(self, inputs):
+            return inputs
 
     class DummyBackbone(nn.Module):
+        compile_prefill = Qwen3Backbone.compile_prefill
+
+        def __init__(self):
+            super().__init__()
+            self._language_model = DummyLanguageModel()
+
+        @property
+        def language_model(self):
+            return self._language_model
+
         def forward(self, inputs):
             return inputs
 
@@ -2637,11 +2651,11 @@ def test_groot_policy_compiles_backbone_forward_when_enabled(monkeypatch):
 
     policy = GrootPolicy(config)
 
-    assert compile_call["fn"].__self__ is dummy_model.backbone
+    assert compile_call["fn"].__self__ is dummy_model.backbone.language_model
     assert compile_call["backend"] == "eager"
     assert compile_call["mode"] == "default"
     assert compile_call["fullgraph"] is False
-    assert policy._groot_model.backbone.forward is compile_call["compiled_forward"]
+    assert policy._groot_model.backbone.language_model.forward is compile_call["compiled_forward"]
 
 
 def test_groot_policy_forwards_n1_7_qwen_inputs(monkeypatch):

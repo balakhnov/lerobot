@@ -120,10 +120,9 @@ class GrootPolicy(PreTrainedPolicy):
             torch.set_float32_matmul_precision("high")
 
         if self.config.compile_backbone:
-            model.backbone.forward = torch.compile(
-                model.backbone.forward,
-                mode=self.config.compile_mode,
+            model.backbone.compile_prefill(
                 backend=self.config.compile_backend,
+                mode=self.config.compile_mode,
                 fullgraph=self.config.compile_fullgraph,
             )
 

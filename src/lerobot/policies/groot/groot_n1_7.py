@@ -19,6 +19,7 @@ from __future__ import annotations
 import logging
 from contextlib import suppress
 from copy import deepcopy
+from inspect import unwrap
 from typing import TYPE_CHECKING, Any
 
 import torch
@@ -351,6 +352,21 @@ class Qwen3Backbone(nn.Module):
                 self.language_model.eval()
             if self.visual and not self.tune_visual:
                 self.visual.eval()
+
+    def compile_prefill(self, *, backend: str, mode: str, fullgraph: bool) -> None:
+        """Compile Qwen's tensor-only language prefill while leaving multimodal packing eager."""
+        language_model = self.language_model
+        # Transformers 5.5 decorates this forward with output-capture and config-default wrappers.
+        # The output-capture wrapper uses ContextVar and cannot be included in a full Dynamo graph.
+        # Bind the undecorated implementation directly; GR00T does not request caches, attentions,
+        # or hidden-state collection, so none of those wrappers are needed here.
+        prefill = unwrap(type(language_model).forward).__get__(language_model, type(language_model))
+        language_model.forward = torch.compile(
+            prefill,
+            backend=backend,
+            mode=mode,
+            fullgraph=fullgraph,
+        )
 
     @property
     def language_model(self) -> nn.Module:

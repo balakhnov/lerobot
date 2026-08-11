@@ -88,7 +88,7 @@ def main():
     config.compile_backend = args.compile_backend
     config.compile_fullgraph = args.compile_fullgraph
 
-    log(f"Compile backbone: {config.compile_backbone}")
+    log(f"Compile backbone prefill: {config.compile_backbone}")
     log(f"Compile action head: {config.compile_action_head}")
     if config.compile_backbone or config.compile_action_head:
         log(f"Compile mode: {config.compile_mode}")
