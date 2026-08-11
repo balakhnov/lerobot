@@ -345,7 +345,7 @@ class GrootConfig(PreTrainedConfig):
     use_bf16: bool = True
     # The native N1.7 fine-tuning recipe keeps model parameters in FP32 and computes under BF16 autocast.
     model_params_fp32: bool = False
-    compile_model: bool = False  # Whether to use torch.compile for model optimization
+    compile_action_head: bool = False  # Whether to use torch.compile for model optimization
     compile_backbone: bool = False  # Whether to compile the Qwen3-VL backbone forward pass
     compile_mode: str = "max-autotune"  # Torch compile mode
     compile_backend: str = "inductor"

@@ -24,7 +24,10 @@ EXPERIMENTS_DIR = "groot_inference_experiments"
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--compile-model", "--compile_model", action=argparse.BooleanOptionalAction, default=False
+        "--compile-action-head", "--compile_action_head", action=argparse.BooleanOptionalAction, default=False
+    )
+    parser.add_argument(
+        "--compile-backbone", "--compile_backbone", action=argparse.BooleanOptionalAction, default=False
     )
     parser.add_argument("--compile-mode", "--compile_mode", default="max-autotune")
     parser.add_argument("--compile-backend", "--compile_backend", default="inductor")
@@ -39,7 +42,16 @@ def main():
     args = parse_args()
     experiment_start = time.perf_counter()
     started_at = datetime.now().astimezone()
-    run_name = f"{started_at:%Y%m%d_%H%M%S_%f}_{'compiled' if args.compile_model else 'eager'}"
+    compiled_targets = [
+        target
+        for enabled, target in (
+            (args.compile_backbone, "backbone"),
+            (args.compile_action_head, "action_head"),
+        )
+        if enabled
+    ]
+    compile_label = f"compiled_{'_'.join(compiled_targets)}" if compiled_targets else "eager"
+    run_name = f"{started_at:%Y%m%d_%H%M%S_%f}_{compile_label}"
     experiment_dir = Path(args.output_dir) / run_name
     experiment_dir.mkdir(parents=True)
     trace_path = experiment_dir / "trace.json"
@@ -70,13 +82,15 @@ def main():
     config = GrootConfig.from_pretrained(MODEL_ID)
     config.base_model_path = BASE_MODEL_ID
     config.device = DEVICE
-    config.compile_model = args.compile_model
+    config.compile_action_head = args.compile_action_head
+    config.compile_backbone = args.compile_backbone
     config.compile_mode = args.compile_mode
     config.compile_backend = args.compile_backend
     config.compile_fullgraph = args.compile_fullgraph
 
-    log(f"Compile model: {config.compile_model}")
-    if config.compile_model:
+    log(f"Compile backbone: {config.compile_backbone}")
+    log(f"Compile action head: {config.compile_action_head}")
+    if config.compile_backbone or config.compile_action_head:
         log(f"Compile mode: {config.compile_mode}")
         log(f"Compile backend: {config.compile_backend}")
         log(f"Compile fullgraph: {config.compile_fullgraph}")
@@ -165,7 +179,8 @@ def main():
             "warmup_steps": WARMUP_STEPS,
             "inference_steps": INFERENCE_STEPS,
             "profile_steps": PROFILE_STEPS,
-            "compile_model": args.compile_model,
+            "compile_backbone": args.compile_backbone,
+            "compile_action_head": args.compile_action_head,
             "compile_mode": args.compile_mode,
             "compile_backend": args.compile_backend,
             "compile_fullgraph": args.compile_fullgraph,
