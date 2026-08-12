@@ -13,6 +13,10 @@ dataset:
   repo_id: lerobot/libero
   episodes: [0]
 
+# Map the dataset camera names to the names expected by the checkpoint.
+rename_map:
+  observation.images.image2: observation.images.wrist_image
+
 benchmark:
   warmup_steps: 2
   inference_steps: 10
