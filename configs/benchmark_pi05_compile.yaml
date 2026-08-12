@@ -1,0 +1,17 @@
+policy:
+  type: pi05
+  path: lerobot/pi05_libero_base
+  device: cuda
+  dtype: bfloat16
+  compile_model: true
+  compile_mode: max-autotune
+
+dataset:
+  repo_id: lerobot/libero
+  episodes: [0]
+
+benchmark:
+  warmup_steps: 2
+  inference_steps: 10
+  profile_steps: 3
+  output_dir: pi05_compile_inference_experiments

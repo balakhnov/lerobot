@@ -1,0 +1,20 @@
+# The policy section follows LeRobot's policy path convention. `path` can be
+# a local checkpoint directory or a Hugging Face Hub repository. All remaining
+# policy fields override the checkpoint's config.json.
+policy:
+  path: nvidia/gr00t17-lerobot-libero_object-640
+  base_model_path: nvidia/GR00T-N1.7-3B
+  device: cuda
+  compile_action_head: false
+  compile_backbone: false
+  compile_fullgraph: true
+
+dataset:
+  repo_id: lerobot/libero
+  episodes: [0]
+
+benchmark:
+  warmup_steps: 2
+  inference_steps: 10
+  profile_steps: 3
+  output_dir: groot_inference_experiments
