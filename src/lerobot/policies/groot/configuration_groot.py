@@ -347,7 +347,11 @@ class GrootConfig(PreTrainedConfig):
     model_params_fp32: bool = False
     compile_action_head: bool = False  # Whether to use torch.compile for model optimization
     compile_backbone: bool = False  # Whether to compile the Qwen3-VL language-model prefill
-    compile_mode: str = "max-autotune"  # Torch compile mode
+    compile_action_head_mode: str = "max-autotune"
+    compile_backbone_mode: str = "max-autotune"
+    # Deprecated compatibility alias for checkpoints that predate the split compile modes.
+    # When set, it takes precedence for both the action head and backbone.
+    compile_mode: str | None = None
     compile_backend: str = "inductor"
     compile_fullgraph: bool = True
 
@@ -377,6 +381,13 @@ class GrootConfig(PreTrainedConfig):
     resume: bool = False
 
     def __post_init__(self):
+        if self.compile_mode is not None:
+            logger.warning(
+                "GrootConfig.compile_mode is deprecated; use compile_action_head_mode and "
+                "compile_backbone_mode instead. Applying compile_mode=%s to both components.",
+                self.compile_mode,
+            )
+
         if self.tokenizer_assets_repo is not None:
             raise ValueError(
                 "Config sets 'tokenizer_assets_repo', which only existed for GR00T N1.5; this looks "

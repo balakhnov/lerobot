@@ -18,7 +18,7 @@ rename_map:
   observation.images.image2: observation.images.wrist_image
 
 benchmark:
-  warmup_steps: 2
-  inference_steps: 10
+  warmup_steps: 10
+  inference_steps: 100
   profile_steps: 3
   output_dir: groot_inference_experiments

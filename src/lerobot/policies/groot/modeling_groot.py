@@ -122,14 +122,14 @@ class GrootPolicy(PreTrainedPolicy):
         if self.config.compile_backbone:
             model.backbone.compile_prefill(
                 backend=self.config.compile_backend,
-                mode=self.config.compile_mode,
+                mode=self.config.compile_mode or self.config.compile_backbone_mode,
                 fullgraph=self.config.compile_fullgraph,
             )
 
         if self.config.compile_action_head:
             model.action_head.get_action_with_features = torch.compile(
                 model.action_head.get_action_with_features,
-                mode=self.config.compile_mode,
+                mode=self.config.compile_mode or self.config.compile_action_head_mode,
                 backend=self.config.compile_backend,
                 fullgraph=self.config.compile_fullgraph,
             )

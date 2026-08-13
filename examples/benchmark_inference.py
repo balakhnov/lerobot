@@ -1,5 +1,6 @@
 import argparse
 import json
+import statistics
 import time
 from datetime import datetime
 from pathlib import Path
@@ -14,7 +15,6 @@ from lerobot.configs import PreTrainedConfig
 from lerobot.datasets import LeRobotDataset
 from lerobot.policies import PreTrainedPolicy, make_policy, make_pre_post_processors
 
-DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[1] / "configs" / "benchmark_groot.yaml"
 EXPERIMENTS_DIR = "inference_experiments"
 
 
@@ -48,13 +48,25 @@ def _tensor_shapes(batch: dict[str, Any]) -> dict[str, list[int]]:
     return {key: list(value.shape) for key, value in batch.items() if isinstance(value, torch.Tensor)}
 
 
+def _timing_summary(samples_ms: list[float]) -> dict[str, float]:
+    return {
+        "median_ms": statistics.median(samples_ms),
+        "mean_ms": statistics.fmean(samples_ms),
+        "std_ms": statistics.pstdev(samples_ms),
+        "min_ms": min(samples_ms),
+        "max_ms": max(samples_ms),
+    }
+
+
 def _benchmark_inference(
     model: PreTrainedPolicy,
     observation: dict[str, Any],
+    preprocess: Any,
+    postprocess: Any,
     device: torch.device,
     warmup_steps: int,
     inference_steps: int,
-) -> tuple[torch.Tensor, float, float]:
+) -> tuple[torch.Tensor, torch.Tensor, float, dict[str, list[float]]]:
     if device.type == "cuda":
         torch.cuda.reset_peak_memory_stats(device)
 
@@ -62,17 +74,38 @@ def _benchmark_inference(
     warmup_start = time.perf_counter()
     with torch.inference_mode():
         for _ in range(warmup_steps):
-            model.predict_action_chunk(observation)
+            processed_observation = preprocess(observation)
+            actions = model.predict_action_chunk(processed_observation)
+            postprocessed_actions = postprocess(actions)
+            _synchronize(device)
     _synchronize(device)
     warmup_seconds = time.perf_counter() - warmup_start
 
-    start = time.perf_counter()
+    timings_ms = {"preprocess": [], "model": [], "postprocess": [], "e2e": []}
     with torch.inference_mode():
         for _ in range(inference_steps):
-            actions = model.predict_action_chunk(observation)
-    _synchronize(device)
-    inference_seconds = time.perf_counter() - start
-    return actions, warmup_seconds, inference_seconds
+            _synchronize(device)
+            start = time.perf_counter()
+            processed_observation = preprocess(observation)
+            _synchronize(device)
+            preprocess_ms = (time.perf_counter() - start) * 1000
+
+            start = time.perf_counter()
+            actions = model.predict_action_chunk(processed_observation)
+            _synchronize(device)
+            model_ms = (time.perf_counter() - start) * 1000
+
+            start = time.perf_counter()
+            postprocessed_actions = postprocess(actions)
+            _synchronize(device)
+            postprocess_ms = (time.perf_counter() - start) * 1000
+
+            timings_ms["preprocess"].append(preprocess_ms)
+            timings_ms["model"].append(model_ms)
+            timings_ms["postprocess"].append(postprocess_ms)
+            timings_ms["e2e"].append(preprocess_ms + model_ms + postprocess_ms)
+
+    return actions, postprocessed_actions, warmup_seconds, timings_ms
 
 
 def _profile_inference(
@@ -107,7 +140,7 @@ def _profile_inference(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", "--config-path", default=DEFAULT_CONFIG_PATH, type=Path)
+    parser.add_argument("--config", "--config-path", type=Path)
     return parser.parse_args()
 
 
@@ -122,8 +155,8 @@ def main() -> None:
     episodes = dataset_config.get("episodes", [0])
 
     benchmark_config = config.get("benchmark", {})
-    warmup_steps = benchmark_config.get("warmup_steps", 2)
-    inference_steps = benchmark_config.get("inference_steps", 10)
+    warmup_steps = benchmark_config.get("warmup_steps", 10)
+    inference_steps = benchmark_config.get("inference_steps", 100)
     profile_steps = benchmark_config.get("profile_steps", 3)
     output_dir = Path(benchmark_config.get("output_dir", EXPERIMENTS_DIR))
 
@@ -173,30 +206,39 @@ def main() -> None:
     }
     if policy_config.type == "groot":
         preprocessor_overrides["groot_n1_7_vlm_encode_v1"] = {"device": str(device)}
-    preprocess, _ = make_pre_post_processors(
+    preprocess, postprocess = make_pre_post_processors(
         model.config, policy_path, preprocessor_overrides=preprocessor_overrides
     )
-    observation = preprocess(observation)
+    processed_observation = preprocess(observation)
 
     log(f"Images: {len(image_keys)}")
     for key in image_keys:
         log(f"  {key}: {image_shapes[key]}")
     log(f"Instruction: {instruction}")
     log(f"Instruction length: {len(instruction)} characters, {len(instruction.split())} words")
-    log(f"Input tensor shapes: {_tensor_shapes(observation)}")
+    log(f"Input tensor shapes: {_tensor_shapes(processed_observation)}")
 
-    actions, warmup_time, total_inference_time = _benchmark_inference(
-        model, observation, device, warmup_steps, inference_steps
+    actions, postprocessed_actions, warmup_time, timing_samples = _benchmark_inference(
+        model, observation, preprocess, postprocess, device, warmup_steps, inference_steps
     )
-    average_inference_time = total_inference_time / inference_steps
+    timing_summaries = {name: _timing_summary(samples) for name, samples in timing_samples.items()}
     peak_memory_allocated = torch.cuda.max_memory_allocated(device) if device.type == "cuda" else None
     peak_memory_reserved = torch.cuda.max_memory_reserved(device) if device.type == "cuda" else None
 
     log(f"Action shape: {actions.shape}")
+    log(f"Postprocessed action shape: {postprocessed_actions.shape}")
     log(f"Warmup time: {warmup_time:.2f} s")
-    log(f"Average inference time: {average_inference_time * 1000:.2f} ms")
+    for name in ("preprocess", "model", "postprocess", "e2e"):
+        summary = timing_summaries[name]
+        log(
+            f"{name.capitalize()} time: median={summary['median_ms']:.2f} ms, "
+            f"mean={summary['mean_ms']:.2f} ± {summary['std_ms']:.2f} ms, "
+            f"min={summary['min_ms']:.2f} ms, max={summary['max_ms']:.2f} ms"
+        )
 
-    profiler_summary, profile_time = _profile_inference(model, observation, device, profile_steps, trace_path)
+    profiler_summary, profile_time = _profile_inference(
+        model, processed_observation, device, profile_steps, trace_path
+    )
     log(profiler_summary)
     log(f"Chrome trace saved to {trace_path}")
     log(f"Experiment report saved to {report_path}")
@@ -232,19 +274,28 @@ def main() -> None:
             "cuda_version": torch.version.cuda,
         },
         "inputs": {
-            "input_tensor_shapes": _tensor_shapes(observation),
+            "input_tensor_shapes": _tensor_shapes(processed_observation),
             "image_count": len(image_keys),
             "image_shapes": {key: list(shape) for key, shape in image_shapes.items()},
             "instruction": instruction,
             "instruction_characters": len(instruction),
             "instruction_words": len(instruction.split()),
         },
-        "outputs": {"action_shape": list(actions.shape)},
+        "outputs": {
+            "action_shape": list(actions.shape),
+            "postprocessed_action_shape": list(postprocessed_actions.shape),
+        },
         "timings": {
             "warmup_seconds": warmup_time,
-            "inference_total_seconds": total_inference_time,
-            "inference_average_seconds": average_inference_time,
-            "inference_average_ms": average_inference_time * 1000,
+            "components": timing_summaries,
+            "samples_ms": timing_samples,
+            # Retain the previous model-only keys for report consumers.
+            "inference_total_seconds": sum(timing_samples["model"]) / 1000,
+            "inference_average_seconds": timing_summaries["model"]["mean_ms"] / 1000,
+            "inference_average_ms": timing_summaries["model"]["mean_ms"],
+            "e2e_total_seconds": sum(timing_samples["e2e"]) / 1000,
+            "e2e_average_seconds": timing_summaries["e2e"]["mean_ms"] / 1000,
+            "e2e_average_ms": timing_summaries["e2e"]["mean_ms"],
             "profiling_seconds": profile_time,
             "experiment_total_seconds": time.perf_counter() - experiment_start,
         },

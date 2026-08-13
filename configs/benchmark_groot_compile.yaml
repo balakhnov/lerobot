@@ -8,7 +8,8 @@ policy:
   compile_action_head: true
   compile_backbone: true
   compile_fullgraph: true
-  compile_mode: reduce_overhead
+  compile_action_head_mode: max-autotune
+  compile_backbone_mode: reduce-overhead
 
 dataset:
   repo_id: lerobot/libero
@@ -19,7 +20,7 @@ rename_map:
   observation.images.image2: observation.images.wrist_image
 
 benchmark:
-  warmup_steps: 2
-  inference_steps: 10
+  warmup_steps: 10
+  inference_steps: 100
   profile_steps: 3
   output_dir: groot_inference_experiments

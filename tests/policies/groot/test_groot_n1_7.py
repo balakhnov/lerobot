@@ -2646,7 +2646,7 @@ def test_groot_policy_compiles_backbone_prefill_when_enabled(monkeypatch):
     config = _groot_config()
     config.compile_backbone = True
     config.compile_backend = "eager"
-    config.compile_mode = "default"
+    config.compile_backbone_mode = "default"
     config.compile_fullgraph = False
 
     policy = GrootPolicy(config)
@@ -2656,6 +2656,47 @@ def test_groot_policy_compiles_backbone_prefill_when_enabled(monkeypatch):
     assert compile_call["mode"] == "default"
     assert compile_call["fullgraph"] is False
     assert policy._groot_model.backbone.language_model.forward is compile_call["compiled_forward"]
+
+
+def test_groot_policy_uses_independent_action_head_compile_mode(monkeypatch):
+    pytest.importorskip("transformers")
+
+    from lerobot.policies.groot.groot_n1_7 import GR00TN17
+
+    class DummyActionHead(nn.Module):
+        def get_action_with_features(self, inputs):
+            return inputs
+
+    dummy_model = _DummyGrootModel()
+    dummy_model.action_head = DummyActionHead()
+    monkeypatch.setattr(GR00TN17, "from_pretrained", classmethod(lambda cls, **kwargs: dummy_model))
+
+    compile_call = {}
+
+    def fake_compile(fn, **kwargs):
+        compile_call["fn"] = fn
+        compile_call.update(kwargs)
+
+        def compiled_forward(*args, **call_kwargs):
+            return fn(*args, **call_kwargs)
+
+        compile_call["compiled_forward"] = compiled_forward
+        return compiled_forward
+
+    monkeypatch.setattr(torch, "compile", fake_compile)
+    config = _groot_config()
+    config.compile_action_head = True
+    config.compile_action_head_mode = "reduce-overhead"
+    config.compile_backend = "eager"
+    config.compile_fullgraph = False
+
+    policy = GrootPolicy(config)
+
+    assert compile_call["fn"].__self__ is dummy_model.action_head
+    assert compile_call["backend"] == "eager"
+    assert compile_call["mode"] == "reduce-overhead"
+    assert compile_call["fullgraph"] is False
+    assert policy._groot_model.action_head.get_action_with_features is compile_call["compiled_forward"]
 
 
 def test_groot_policy_forwards_n1_7_qwen_inputs(monkeypatch):
