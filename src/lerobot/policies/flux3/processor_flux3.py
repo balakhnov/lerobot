@@ -14,8 +14,8 @@
 """Pre/post-processing pipelines of the ``flux3`` policy.
 
 Order (the OpenPI / pi05 convention): raw -> relative actions (optional) -> normalize -> model ->
-unnormalize -> absolute actions (optional). Grid cameras are resized to a common resolution here;
-the model applies training augmentation, composites its canvas and maps ``[0, 1]`` to the VAE's
+unnormalize -> absolute actions (optional). Grid and side-by-side cameras are resized to a common
+resolution here; the model applies training augmentation, composites its canvas and maps ``[0, 1]`` to the VAE's
 ``[-1, 1]``. Normalization statistics (``dataset_stats``) are computed on relative actions when
 ``use_relative_actions`` is set, exactly as pi05 does.
 """
@@ -172,14 +172,14 @@ PAST_ACTIONS = "observation.past_actions"
 
 @ProcessorStepRegistry.register("flux3_camera_resize")
 class CameraResizeProcessorStep(ObservationProcessorStep):
-    """Resize mixed-resolution grid cameras to the largest height and width in the observation."""
+    """Align grid and side-by-side cameras to the largest height and width before stacking."""
 
     def __init__(self, camera_keys: list[str], camera_layout: str):
         self.camera_keys = list(camera_keys)
         self.camera_layout = camera_layout
 
     def observation(self, observation: dict[str, Any]) -> dict[str, Any]:
-        if self.camera_layout != "grid":
+        if self.camera_layout not in ("grid", "side_by_side"):
             return observation
         images = [observation[key] for key in self.camera_keys]
         for key, image in zip(self.camera_keys, images, strict=True):
@@ -210,7 +210,7 @@ class CameraResizeProcessorStep(ObservationProcessorStep):
     def transform_features(
         self, features: dict[PipelineFeatureType, dict[str, PolicyFeature]]
     ) -> dict[PipelineFeatureType, dict[str, PolicyFeature]]:
-        if self.camera_layout != "grid":
+        if self.camera_layout not in ("grid", "side_by_side"):
             return features
         observations = dict(features[PipelineFeatureType.OBSERVATION])
         hw = tuple(max(observations[key].shape[axis] for key in self.camera_keys) for axis in (-2, -1))

@@ -148,10 +148,11 @@ def test_history_reconnect_rejects_inconsistent_steps(mismatch):
 
 @pytest.mark.parametrize("frames", [None, 3])
 @pytest.mark.parametrize("dtype", [torch.float32, torch.uint8])
-def test_grid_resize_preserves_values_and_saved_pipeline(tmp_path, frames, dtype):
+@pytest.mark.parametrize("layout", ["grid", "side_by_side"])
+def test_camera_resize_preserves_values_and_saved_pipeline(tmp_path, frames, dtype, layout):
     camera_shapes = {"observation.images.a": (3, 16, 32), "observation.images.b": (3, 32, 16)}
     cfg = single_config(
-        camera_layout="grid",
+        camera_layout=layout,
         input_features={
             **{
                 key: PolicyFeature(type=FeatureType.VISUAL, shape=shape)
@@ -182,16 +183,65 @@ def test_grid_resize_preserves_values_and_saved_pipeline(tmp_path, frames, dtype
     restored, _ = make_pre_post_processors(cfg, pretrained_path=tmp_path)
     torch.testing.assert_close(restored(batch), result, rtol=0, atol=0)
     cfg.camera_keys = ["observation.images.a"]
+    cfg.camera_layout = "single"
     restored, _ = make_pre_post_processors(cfg, pretrained_path=tmp_path)
     subset = restored({OBS_STATE: batch[OBS_STATE], cfg.camera_keys[0]: batch[cfg.camera_keys[0]]})
     assert torch.equal(subset[cfg.camera_keys[0]], batch[cfg.camera_keys[0]])
 
 
-def test_grid_resize_leaves_equal_images_and_rejects_inconsistent_times():
-    step = CameraResizeProcessorStep(["a", "b"], "grid")
+@pytest.mark.parametrize("layout", ["grid", "side_by_side"])
+def test_camera_resize_leaves_equal_images_and_rejects_inconsistent_times(layout):
+    step = CameraResizeProcessorStep(["a", "b"], layout)
     image = torch.rand(2, 3, 8, 16)
     transition = {TransitionKey.OBSERVATION: {"a": image, "b": image[:, None]}}
     result = step(transition)[TransitionKey.OBSERVATION]
     assert result["a"] is image and result["b"] is transition[TransitionKey.OBSERVATION]["b"]
     with pytest.raises(ValueError, match="share"):
         step({TransitionKey.OBSERVATION: {"a": image, "b": torch.rand(2, 2, 3, 8, 16)}})
+
+
+def test_saved_side_by_side_history_resizes_renamed_training_cameras(tmp_path):
+    camera_shapes = {
+        "observation.images.scene": (3, 16, 32),
+        "observation.images.wrist": (3, 8, 16),
+    }
+    cfg = rich_task_config(
+        camera_layout="side_by_side",
+        camera_keys=list(camera_shapes),
+        chunk_size=42,
+        input_features={
+            **{
+                key: PolicyFeature(type=FeatureType.VISUAL, shape=shape)
+                for key, shape in camera_shapes.items()
+            },
+            OBS_STATE: PolicyFeature(type=FeatureType.STATE, shape=(6,)),
+        },
+    )
+    pre, post = make_flux3_pre_post_processors(cfg)
+    pre.save_pretrained(tmp_path)
+    post.save_pretrained(tmp_path)
+    restored, _ = make_pre_post_processors(
+        cfg,
+        pretrained_path=tmp_path,
+        preprocessor_overrides={
+            "rename_observations_processor": {
+                "rename_map": {
+                    "observation.images.realsense": "observation.images.scene",
+                    "observation.images.front": "observation.images.wrist",
+                }
+            }
+        },
+    )
+    batch = {
+        OBS_STATE: torch.ones(2, 8, 6),
+        ACTION: torch.ones(2, 50, 6),
+        "observation.images.realsense": torch.full((2, 50, 3, 16, 32), 0.25),
+        "observation.images.front": torch.full((2, 50, 3, 8, 16), 0.75),
+    }
+    result = restored(batch)
+    cameras = torch.stack([result[key] for key in cfg.camera_order], dim=1)
+    assert cameras.shape == (2, 2, 50, 3, 16, 32)
+    torch.testing.assert_close(cameras[:, 0], torch.full_like(cameras[:, 0], 0.25))
+    torch.testing.assert_close(cameras[:, 1], torch.full_like(cameras[:, 1], 0.75))
+    assert result[ACTION].shape == (2, 42, 6)
+    assert batch["observation.images.front"].shape[-2:] == (8, 16)

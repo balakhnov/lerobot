@@ -16,12 +16,15 @@
 import math
 from collections import defaultdict
 from dataclasses import dataclass, field
+from typing import Any
 
 import torch
 import torch.nn.functional as F  # noqa: N812
 from einops import rearrange
 from torch import Tensor, nn
+from torch.distributed.fsdp import FSDPModule
 from torch.nn.attention import SDPBackend, sdpa_kernel
+from torch.utils._pytree import tree_map
 from torch.utils.checkpoint import checkpoint
 
 try:
@@ -549,8 +552,19 @@ class JointSingleSeq(nn.Module):
             if hasattr(module, "attn_mode"):
                 module.attn_mode = params.attn_mode
 
-    def _run_block(self, block, *args, **kwargs):
+    def _run_block(self, block: nn.Module, *args: Any, **kwargs: Any) -> Any:
         if self.training and getattr(self, "gradient_checkpointing", False):
+            if isinstance(block, FSDPModule):
+                mp_policy = block._get_fsdp_state()._mp_policy
+                if mp_policy.cast_forward_inputs and mp_policy.param_dtype is not None:
+                    # FSDP2 skips its input cast during checkpoint recomputation. Save
+                    # inputs in the forward compute dtype so recomputation matches.
+                    def cast_input(value: Any) -> Any:
+                        if isinstance(value, Tensor) and value.is_floating_point():
+                            return value.to(dtype=mp_policy.param_dtype)
+                        return value
+
+                    args, kwargs = tree_map(cast_input, (args, kwargs))
             return checkpoint(block, *args, use_reentrant=False, **kwargs)
         return block(*args, **kwargs)
 

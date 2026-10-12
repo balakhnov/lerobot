@@ -571,6 +571,8 @@ def train(cfg: TrainPipelineConfig) -> None:
     # interference, resolves the declared parallelism degrees against the launched world, and
     # builds the Accelerator from the config mirrors.
     accelerator = make_accelerator(cfg)
+    # Every rank must finish validation before logging creates the output directory.
+    accelerator.wait_for_everyone()
     parallel_dims = ParallelDims.from_config(
         cfg.parallelism, accelerator.num_processes, accelerator.device.type
     )
